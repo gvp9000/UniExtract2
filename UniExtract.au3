@@ -163,6 +163,7 @@ Global $iCleanup = $OPTION_MOVE
 Global $bOptLockOutputDirectory = 0
 Global $bOptKeepOpen = 0
 Global $silentmode = 0
+Global $g_bUpdateRunning = False
 Global $extract = 1
 Global $checkUnicode = 1
 Global $bOptExtractVideo = 1
@@ -351,7 +352,9 @@ If Not FileExists($bindir) And RepairProgramFiles(t('PROGRAM_FILES_MISSING')) Th
 ; If no file passed, display GUI to select file and set options
 If $prompt Then
 	CreateGUI()
+	$g_bUpdateRunning = True
 	CheckUpdate($UPDATEMSG_FOUND_ONLY, True, $UPDATE_ALL, False)
+	$g_bUpdateRunning = False
 
 	While 1
 		If Not $guimain Then ExitLoop
@@ -5800,6 +5803,17 @@ Func Uninstall($bRemoveLogs = True, $bRemoveUserData = False)
 	terminate($STATUS_SILENT)
 EndFunc
 
+Func SafeCheckUpdate()
+    If $g_bUpdateRunning Then
+        MsgBox(64, "Updater", "An update check is already running.")
+        Return
+    EndIf
+
+    $g_bUpdateRunning = True
+    CheckUpdate($UPDATEMSG_PROMPT, False, $UPDATE_ALL, True)
+    $g_bUpdateRunning = False
+EndFunc
+
 ; ------------------------ Begin GUI Control Functions ------------------------
 
 ; Build and display GUI if necessary
@@ -5945,7 +5959,7 @@ Func CreateGUI()
 	GUICtrlSetOnEvent($pluginsitem, "GUI_Plugins")
 	GUICtrlSetOnEvent($feedbackitem, "GUI_Feedback")
 	GUICtrlSetOnEvent($firststartitem, "GUI_FirstStart")
-	GUICtrlSetOnEvent($updateitem, "CheckUpdate")
+	GUICtrlSetOnEvent($updateitem, "SafeCheckUpdate")
 	GUICtrlSetOnEvent($webitem, "GUI_Website_Original")
 	GUICtrlSetOnEvent($web2item, "GUI_Website")
 	GUICtrlSetOnEvent($gititem, "GUI_Website_Github")
