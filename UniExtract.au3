@@ -2,8 +2,8 @@
 #AutoIt3Wrapper_Icon=.\Support\Icons\uniextract_exe.ico
 #AutoIt3Wrapper_Outfile=.\UniExtract.exe
 #AutoIt3Wrapper_Res_Description=Universal Extractor
-#AutoIt3Wrapper_Res_Fileversion=2.3.0.2
-#AutoIt3Wrapper_Res_ProductVersion=2.3.0.2
+#AutoIt3Wrapper_Res_Fileversion=2.3.0.3
+#AutoIt3Wrapper_Res_ProductVersion=2.3.0.3
 #AutoIt3Wrapper_Res_LegalCopyright=GNU General Public License v2
 #AutoIt3Wrapper_Res_Field=Author|Jared Breland, Bioruebe, gvp9000
 #AutoIt3Wrapper_Res_Field=Homepage|https://bioruebe.com/dev/uniextract/
