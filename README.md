@@ -97,7 +97,7 @@ Did you encounter a problem with UniExtract? Please report what went wrong to us
 
 - If you have a Github account, you can **[open an issue](https://github.com/gvp9000/UniExtract2/issues)**. This is the prefered way for **feature requests**, **suggestions** and **general technical problems**.
 - From within Universal Extractor: select **'Give feedback'** from the **'Help' menu**. This is the prefered way to submit **failed extractons**. If UniExtract was not successful, it will automatically ask you to send feedback (can be disabled from the options). This type of feedback includes a log with several debug information, which could help fixing the problem.
-- Direct contact via **[email](https://bioruebe.com/blog/contact/)**. This can be used if you do not have an account at Github. Many users, who created translations for UniExtract, like to send updated files per email. (Others open [pull requests](https://github.com/gvp9000/UniExtract2/pulls) instead.)
+- Direct contact via opening a [pull requests](https://github.com/gvp9000/UniExtract2/pulls).
 
 ## Building from Source
 
