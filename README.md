@@ -29,7 +29,7 @@ Get the latest version [here](https://github.com/gvp9000/UniExtract2/releases/do
 
 ###### Virus alert?
 
-Universal Extractor does not contain any malware. Some anti-virus programs occasionally misdetect files inside UniExtract's program directory. You can be sure that this is a so-called false positive, an error - if you downloaded UniExtract from the official source at `https://github.com/gvp9000/UniExtract2`. A more detailed explanation can be found [here](/docs/ANTI-MALWARE.md). If you encounter a false positive, please report it [here](https://github.com/Bioruebe/UniExtract2/issues/78).
+Universal Extractor does not contain any malware. Some anti-virus programs occasionally misdetect files inside UniExtract's program directory. You can be sure that this is a so-called false positive, an error - if you downloaded UniExtract from the official source at `https://github.com/gvp9000/UniExtract2`. A more detailed explanation can be found [here](/docs/ANTI-MALWARE.md). If you encounter a false positive, please report it [here](https://github.com/gvp9000/UniExtract2/issues/8).
 
 ###### 'Windows protected your PC'?
 
@@ -52,11 +52,11 @@ Universal Extractor 2 comes with a built-in updater. You will receive a notifica
 At the moment, UniExtract is still in beta and updates are rare. If you want to keep up-to-date with the development, you can [opt-in to more frequent updates](#nightly-builds).
 
 **Do not replace any files in UniExtract's program directory yourself. This will break things!**
-More details can be found [here](https://github.com/Bioruebe/UniExtract2/issues/293#issuecomment-1142877436).
+**Do not update via Help - Check for updates !!!**
 
 ###### Older versions
 
-...can be found on the [Releases](https://github.com/Bioruebe/UniExtract2/releases) page.
+...can be found on the [Releases](https://github.com/gvp9000/UniExtract2/releases) page.
 However, this is for historical reasons ony. Please consider using the newest version instead.
 
 ###### Uninstalling
@@ -74,7 +74,6 @@ Universal Extractor itself is completely portable, with some exceptions:
 - Enabling context menu entries will create registry entries
 - To extract a wide variety of file types more than 50 different extractors are used. Some of them might leave traces on the system. For the most common archives and installers extraction can be considered portable, for others probably not.
 - Storing Universal Extractor in a directory without write access (e.g. C:\Program Files) enables multi-user mode. This results in configuration files being stored in the %APPDATA% directory (C:\Users\YourUsername\AppData\Roaming\Bioruebe\UniExtract).
-  See issue [#20](https://github.com/Bioruebe/UniExtract2/issues/20) for more information.
 
 #### Why are there many different versions/modifications/repacks of Universal Extractor?
 
@@ -86,7 +85,7 @@ However, Universal Extractor 2 may fail to unpack files, which other versions of
 
 #### Can UniExtract (re)compress files?
 
-No. This tool was designed as an extraction utility. A counterpart (*"UniArchive"*) is out of scope - at least for me. (Read about the reasons [here](https://github.com/Bioruebe/UniExtract2/issues/87#issuecomment-409806225).) Feel free to create it! 
+No. This tool was designed as an extraction utility.
 
 ## Nightly Builds
 
@@ -96,9 +95,9 @@ You can opt-in to receive the most current development build of Universal Extrac
 
 Did you encounter a problem with UniExtract? Please report what went wrong to us. There are differnet ways to do so:
 
-- If you have a Github account, you can **[open an issue](https://github.com/Bioruebe/UniExtract2/issues)**. This is the prefered way for **feature requests**, **suggestions** and **general technical problems**.
+- If you have a Github account, you can **[open an issue](https://github.com/gvp9000/UniExtract2/issues)**. This is the prefered way for **feature requests**, **suggestions** and **general technical problems**.
 - From within Universal Extractor: select **'Give feedback'** from the **'Help' menu**. This is the prefered way to submit **failed extractons**. If UniExtract was not successful, it will automatically ask you to send feedback (can be disabled from the options). This type of feedback includes a log with several debug information, which could help fixing the problem.
-- Direct contact via **[email](https://bioruebe.com/blog/contact/)**. This can be used if you do not have an account at Github. Many users, who created translations for UniExtract, like to send updated files per email. (Others open [pull requests](https://github.com/Bioruebe/UniExtract2/pulls) instead.)
+- Direct contact via **[email](https://bioruebe.com/blog/contact/)**. This can be used if you do not have an account at Github. Many users, who created translations for UniExtract, like to send updated files per email. (Others open [pull requests](https://github.com/gvp9000/UniExtract2/pulls) instead.)
 
 ## Building from Source
 
@@ -106,7 +105,7 @@ Did you encounter a problem with UniExtract? Please report what went wrong to us
 2. Download and install [SciTE](https://www.autoitscript.com/site/autoit-script-editor/downloads/) (Optional)
    - Running UniExtract through SciTE has the additional benefit of real-time logging in the built-in console.
 3. Clone this repository **or** download a snapshot and unpack into a folder of your likings
-4. Open UniExtract.au3 in SciTE and hit `F5` to run in debug mode; `F7` to build an executable file **or** run UniExtract.au3 through Aut2Exe (look [here](https://github.com/Bioruebe/UniExtract2/issues/72#issuecomment-313288728) for more information about Aut2Exe)
+4. Open UniExtract.au3 in SciTE and hit `F5` to run in debug mode; `F7` to build an executable file **or** run UniExtract.au3 through Aut2Exe
 5. Download the necessary program files, which are not part of the source package
    1. Run the program
    2. UniExtract will display a message that the program files are incomplete. Select `No`.
@@ -126,5 +125,5 @@ Code (functions, UDFs, etc.) written from scratch by me (which are not under cop
 
 Universal Extractor uses [TrIDLib by Marco Pontello](http://mark0.net/code-tridlib-e.html), several [7zip plugins by Dec Software](https://www.tc4shell.com/en/7zip/) and many other great tools and libraries to support as many file formats as possible. Please consider supporting the authors of the software [mentioned here](/docs/helper_binaries_info.txt).
 
-Please note that Universal Extractor includes third-party software, which uses different licenses than the main program. Specifically, **some extractors do not allow commercial use**. If you intend to use the software for commercial purposes, please check the individual license files in the `/docs` subdirectory and the [helper binary info file](https://github.com/Bioruebe/UniExtract2/blob/master/helper_binaries_info.txt) first.
+Please note that Universal Extractor includes third-party software, which uses different licenses than the main program. Specifically, **some extractors do not allow commercial use**. If you intend to use the software for commercial purposes, please check the individual license files in the `/docs` subdirectory and the [helper binary info file](https://github.com/gvp9000/UniExtract2/blob/master/helper_binaries_info.txt) first.
 Feel free to delete files, whose license does not fit your use case, from the `/bin` subdirectory.
