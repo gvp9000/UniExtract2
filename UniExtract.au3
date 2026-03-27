@@ -185,6 +185,7 @@ Global $sFullLog = "", $success = $RESULT_UNKNOWN, $sArcTypeOverride = 0, $sMeth
 Global $innofailed, $arjfailed, $7zfailed, $zipfailed, $iefailed, $isofailed, $tridfailed, $gamefailed, $observerfailed
 Global $unpackfailed, $exefailed, $ttarchfailed
 Global $g_bInnoExtractUsable = False
+Global $g_sPrimaryDetectRaw = "", $g_sPrimaryDetectMatch = "", $g_sPrimaryDetectScanner = "", $g_bPrimaryStrongHit = False
 Global $oldpath, $oldoutdir, $sUnicodeName, $createdir
 Global $guiprefs, $TBgui = 0, $exStyle = -1, $idTrayStatusExt, $BatchBut, $idProgress, $sComError = 0
 Global $Tray_Statusbox, $isexe = False, $Message, $run = 0, $runtitle, $idOptDeleteSourceFile[3]
@@ -220,6 +221,10 @@ Const $cic = "cicdec.exe"
 Const $daa = "daa2iso.exe"
 Const $enigma = "EnigmaVBUnpacker.exe"
 Const $exeinfope = Quote($bindir & "exeinfope.exe")
+Const $diec_path = $bindir & "die\diec.exe"
+Const $diegui_path = $bindir & "die\die.exe"
+Const $diec = Quote($diec_path, True)
+Const $diegui = Quote($diegui_path, True)
 Const $expand = Quote(@SystemDir & "\expand.exe", True)
 Const $filetool = Quote($bindir & "file.exe", True)
 Const $freearc = "unarc.exe"
@@ -423,6 +428,10 @@ Func StartExtraction()
 	$ttarchfailed = False
 	$unpackfailed = False
 	ReDim $aFiletype[0][2]
+	$g_sPrimaryDetectRaw = ""
+	$g_sPrimaryDetectMatch = ""
+	$g_sPrimaryDetectScanner = ""
+	$g_bPrimaryStrongHit = False
 
 	; If an extractor is specified via command line parameter, we simply use that without scanning
 	If $sArcTypeOverride Then Return extract($sArcTypeOverride, $sArcTypeOverride & " " & t('TERM_FILE'))
@@ -432,8 +441,8 @@ Func StartExtraction()
 	; UniExtract uses four methods of detection (in order):
 	; 1. File extensions for special cases
 	; 2. Binary file analysis of files using TrID if file extension is not .exe
-	; 3. Binary file analysis of PE (executable) files using Exeinfo PE
-	; 4. Extra analysis using PeID if executable is not recognized by Exeinfo PE
+	; 3. Binary file analysis using Detect It Easy (DiE), with Exeinfo PE fallback
+	; 4. Extra analysis using PeID if executable is not recognized by the primary detector
 	; 5. Binary file analysis of files using TrID
 	; 6. File extensions
 
@@ -446,7 +455,7 @@ Func StartExtraction()
 	; Scan file with TrID, if file is not an .exe
 	FileScan_Trid($extract)
 
-	; ExeInfo PE supports non-executables as well
+	; Detect It Easy supports non-executables as well
 	If Not $exefailed Then FileScan_ExeInfo()
 
 	; Display file information and terminate if scan only mode
@@ -483,8 +492,12 @@ Func IsExe()
 
 	FileScan_ExeInfo()
 
-	FileScan_Peid("ext", $extract) ; Userdb is much faster
-	FileScan_Peid("hard", $extract)
+	If $g_bPrimaryStrongHit Then
+		Cout("Skipping PEiD fallback because primary detector already produced a strong match: " & $g_sPrimaryDetectMatch)
+	Else
+		FileScan_Peid("ext", $extract) ; Userdb is much faster
+		FileScan_Peid("hard", $extract)
+	EndIf
 
 	; Make sure TrID doesn't call IsExe again
 	$exefailed = True
@@ -1100,34 +1113,42 @@ Func FileScan_MediaInfo()
 	_DeleteTrayMessageBox()
 EndFunc
 
-; Scan file with Exeinfo PE
+; Scan file with Detect It Easy (DiE), fallback to Exeinfo PE
 Func FileScan_ExeInfo($bUseCmd = $extract)
-	Local $sFileType = ""
+	Local $sFileType = "", $sScanner = "Detect It Easy"
 
-	Cout("Start file scan using Exeinfo PE")
-	_CreateTrayMessageBox(t('SCANNING_EXE', "Exeinfo PE"))
+	Cout("Start file scan using Detect It Easy (DiE)")
+	_CreateTrayMessageBox(t('SCANNING_EXE', "Detect It Easy (DiE)"))
 
-	; Analyze file
-	If $bUseCmd Then ; Use log command line for best speed
-		Local Const $LogFile = $logdir & "exeinfo.log"
-		RunWait($exeinfope & ' "' & $file & '*" /sx /log:"' & $LogFile & '"', $bindir, @SW_HIDE)
-		$sFileType = _FileRead($LogFile, True)
-		If StringInStr($sFileType, "File corrupted or Buffer Error") Or StringIsSpace($sFileType) Then Return FileScan_ExeInfo(False)
-	Else ; In scan only mode run and read GUI fields to get additional information on how to extract
-		$aReturn = OpenExeInfo()
-		$TimerStart = TimerInit()
+	If FileExists($diec_path) Then
+		$sFileType = FetchStdout($diec & ' "' & $file & '"', $bindir, @SW_HIDE, 0, False, False, False)
+		If @error Then $sFileType = ""
+	EndIf
 
-		While $sFileType = "" Or StringInStr($sFileType, "File too big") Or StringInStr($sFileType, "Antivirus may slow") Or _
-			  StringInStr($sFileType, "File corrupted or Buffer Error")
-			Sleep(200)
-			$sFileType = ControlGetText($aReturn[0], "", "TEdit6")
-			$TimerDiff = TimerDiff($TimerStart)
-			If $TimerDiff > $Timeout Then ExitLoop
-		WEnd
+	If StringIsSpace($sFileType) Then
+		Cout("Detect It Easy returned no usable output, falling back to Exeinfo PE")
+		$sScanner = "Exeinfo PE"
+		If $bUseCmd Then ; Use log command line for best speed
+			Local Const $LogFile = $logdir & "exeinfo.log"
+			RunWait($exeinfope & ' "' & $file & '*" /sx /log:"' & $LogFile & '"', $bindir, @SW_HIDE)
+			$sFileType = _FileRead($LogFile, True)
+			If StringInStr($sFileType, "File corrupted or Buffer Error") Or StringIsSpace($sFileType) Then Return FileScan_ExeInfo(False)
+		Else ; In scan only mode run and read GUI fields to get additional information on how to extract
+			$aReturn = OpenExeInfo()
+			$TimerStart = TimerInit()
 
-		$sFileType &= @CRLF & @CRLF & ControlGetText($aReturn[0], "", "TEdit5")
+			While $sFileType = "" Or StringInStr($sFileType, "File too big") Or StringInStr($sFileType, "Antivirus may slow") Or _
+				  StringInStr($sFileType, "File corrupted or Buffer Error")
+				Sleep(200)
+				$sFileType = ControlGetText($aReturn[0], "", "TEdit6")
+				$TimerDiff = TimerDiff($TimerStart)
+				If $TimerDiff > $Timeout Then ExitLoop
+			WEnd
 
-		CloseExeInfo($aReturn)
+			$sFileType &= @CRLF & @CRLF & ControlGetText($aReturn[0], "", "TEdit5")
+
+			CloseExeInfo($aReturn)
+		EndIf
 	EndIf
 
 	_DeleteTrayMessageBox()
@@ -1137,155 +1158,163 @@ Func FileScan_ExeInfo($bUseCmd = $extract)
 	; Return if file is too big
 	If StringInStr($sFileType, "Skipped") Then Return
 
-	; Do not display 'unknown file type' scan result in scan only mode
-	If Not $extract And StringInStr($sFileType, "file is not EXE or DLL") Then Return
+	; Do not display unknown file type scan result in scan only mode
+	If Not $extract And ($sScanner = "Exeinfo PE" And StringInStr($sFileType, "file is not EXE or DLL")) Then Return
 
-	_FiletypeAdd("Exeinfo PE", $sFileType)
+	_FiletypeAdd($sScanner, $sFileType)
 
 	; Return filetype without matching if specified
 	If Not $extract Then Return $sFileType
 
+	Local $sMatchType = _NormalizeDetectorOutput($sFileType, $sScanner)
+	$g_sPrimaryDetectRaw = $sFileType
+	$g_sPrimaryDetectMatch = $sMatchType
+	$g_sPrimaryDetectScanner = $sScanner
+	$g_bPrimaryStrongHit = _IsStrongPrimaryDetectorHit($sMatchType)
+	If $g_bPrimaryStrongHit Then Cout("Primary detector strong match: " & StringReplace($sMatchType, @CRLF, " | "))
+
 	; Match known patterns
 	Select
-		Case StringInStr($sFileType, "Inno Setup")
+		Case StringInStr($sMatchType, "Inno Setup")
 			checkInno()
 
-		Case StringInStr($sFileType, "WinAce / SFX Factory")
+		Case StringInStr($sMatchType, "WinAce / SFX Factory")
 			extract($TYPE_ACE, t('TERM_SFX') & " ACE " & t('TERM_ARCHIVE'))
 
-		Case StringInStr($sFileType, "Actual Installer")
+		Case StringInStr($sMatchType, "Actual Installer")
 			extract($TYPE_ACTUAL, 'Actual Installer ' & t('TERM_PACKAGE'))
 
-		Case StringInStr($sFileType, "Advanced Installer")
+		Case StringInStr($sMatchType, "Advanced Installer")
 			extract($TYPE_AI, 'Advanced Installer ' & t('TERM_PACKAGE'))
 
-		Case StringInStr($sFileType, "FreeArc")
+		Case StringInStr($sMatchType, "FreeArc")
 			extract($TYPE_FREEARC, 'FreeArc ' & t('TERM_ARCHIVE'))
 
-		Case StringInStr($sFileType, "CreateInstall")
+		Case StringInStr($sMatchType, "CreateInstall")
 			extract($TYPE_CI, 'CreateInstall ' & t('TERM_INSTALLER'))
 
-		Case StringInStr($sFileType, "Excelsior Installer")
+		Case StringInStr($sMatchType, "Excelsior Installer")
 			extract($TYPE_EI, 'Excelsior Installer ' & t('TERM_INSTALLER'))
 
-		Case StringInStr($sFileType, "Ghost Installer Studio")
+		Case StringInStr($sMatchType, "Ghost Installer Studio")
 			extract($TYPE_GHOST, 'Ghost Installer Studio ' & t('TERM_INSTALLER'))
 
-		Case StringInStr($sFileType, "Gentee Installer") Or StringInStr($sFileType, "Installer VISE")
+		Case StringInStr($sMatchType, "Gentee Installer") Or StringInStr($sMatchType, "Installer VISE")
 			checkIE()
 
-		Case StringInStr($sFileType, "Setup Factory")
+		Case StringInStr($sMatchType, "Setup Factory")
 			CheckTotalObserver('Setup Factory ' & t('TERM_INSTALLER'))
 			checkIE()
 
-		Case StringInStr($sFileType, "install4j")
+		Case StringInStr($sMatchType, "install4j")
 			BmsExtract("install4j")
 
 		; Needs to be before InstallShield
-		Case StringInStr($sFileType, "InstallAware")
+		Case StringInStr($sMatchType, "InstallAware")
 			extract($TYPE_7Z, 'InstallAware ' & t('TERM_INSTALLER') & ' ' & t('TERM_PACKAGE'))
 
-		Case StringInStr($sFileType, "Install Creator/Pro")
+		Case StringInStr($sMatchType, "Install Creator/Pro")
 			extract($TYPE_CIC, 'Clickteam Install Creator ' & t('TERM_INSTALLER'))
 
-		Case StringInStr($sFileType, "InstallScript Setup Launcher")
+		Case StringInStr($sMatchType, "InstallScript Setup Launcher")
 			extract($TYPE_ISCRIPT, 'InstallScript ' & t('TERM_INSTALLER'))
 
-		Case StringInStr($sFileType, "InstallShield")
+		Case StringInStr($sMatchType, "InstallShield")
 			extract($TYPE_ISEXE, 'InstallShield ' & t('TERM_INSTALLER'))
 
-		Case StringInStr($sFileType, "KGB SFX")
+		Case StringInStr($sMatchType, "KGB SFX")
 			extract($TYPE_KGB, t('TERM_SFX') & ' KGB ' & t('TERM_PACKAGE'))
 
-		Case StringInStr($sFileType, "Microsoft Visual C++ 7.0") And StringInStr($sFileType, "Custom") And Not StringInStr($sFileType, "Hotfix")
+		Case StringInStr($sMatchType, "Microsoft Visual C++ 7.0") And StringInStr($sMatchType, "Custom") And Not StringInStr($sMatchType, "Hotfix")
 			extract($TYPE_VSSFX, 'Visual C++ ' & t('TERM_SFX') & ' ' & t('TERM_INSTALLER'))
 
-		Case StringInStr($sFileType, "Microsoft Visual C++ 6.0") And StringInStr($sFileType, "Custom")
+		Case StringInStr($sMatchType, "Microsoft Visual C++ 6.0") And StringInStr($sMatchType, "Custom")
 			extract($TYPE_VSSFX_PATH, 'Visual C++ ' & t('TERM_SFX') & '' & t('TERM_INSTALLER'))
 
-		Case StringInStr($sFileType, "www.molebox.com")
+		Case StringInStr($sMatchType, "www.molebox.com")
 			extract($TYPE_MOLE, 'Mole Box ' & t('TERM_CONTAINER'))
 
-		Case StringInStr($sFileType, "Netopsystems AG INSTALLER FEAD")
+		Case StringInStr($sMatchType, "Netopsystems AG INSTALLER FEAD")
 			extract($TYPE_FEAD, 'Netopsystems FEAD ' & t('TERM_PACKAGE'))
 
-		Case StringInStr($sFileType, "Nullsoft")
+		Case StringInStr($sMatchType, "Nullsoft")
 			checkNSIS()
 
-		Case StringInStr($sFileType, "RAR SFX")
+		Case StringInStr($sMatchType, "RAR SFX")
 			extract($TYPE_RAR, t('TERM_SFX') & ' RAR ' & t('TERM_ARCHIVE'));
 
-		Case StringInStr($sFileType, "RoboForm Installer")
+		Case StringInStr($sMatchType, "Microsoft Windows Installer") Or StringInStr($sMatchType, "MSI Installer")
+			extract($TYPE_MSI, 'Windows Installer (MSI) ' & t('TERM_PACKAGE'))
+
+		Case StringInStr($sMatchType, "RoboForm Installer")
 			extract($TYPE_ROBO, 'RoboForm ' & t('TERM_INSTALLER'))
 
-		Case StringInStr($sFileType, "WiX Installer")
+		Case StringInStr($sMatchType, "WiX Installer")
 			extract($TYPE_WIX, 'WiX ' & t('TERM_INSTALLER'))
 
-		Case StringInStr($sFileType, "SPx Method") Or StringInStr($sFileType, "Microsoft SFX CAB")
+		Case StringInStr($sMatchType, "SPx Method") Or StringInStr($sMatchType, "Microsoft SFX CAB")
 			Local $arcdisp = t('TERM_SFX') & " Microsoft CAB " & t('TERM_ARCHIVE')
-			If StringInStr($sFileType, "rename file *.exe as *.cab") Then
+			If StringInStr($sMatchType, "rename file *.exe as *.cab") Then
 				CreateRenamedCopy("cab")
 				check7z($arcdisp)
 			Else
 				extract($TYPE_CAB, $arcdisp)
 			EndIf
 
-		Case StringInStr($sFileType, "Overlay :  SWF flash object ver", 0)
+		Case StringInStr($sMatchType, "Overlay :  SWF flash object ver", 0)
 			extract($TYPE_SWFEXE, 'Shockwave Flash ' & t('TERM_CONTAINER'))
 
-		Case StringInStr($sFileType, "VMware ThinApp") Or StringInStr($sFileType, "Thinstall") Or StringInStr($sFileType, "ThinyApp Packager", 0)
+		Case StringInStr($sMatchType, "VMware ThinApp") Or StringInStr($sMatchType, "Thinstall") Or StringInStr($sMatchType, "ThinyApp Packager", 0)
 			extract($TYPE_THINSTALL, "ThinApp/Thinstall" & t('TERM_ARCHIVE'))
 
-		Case StringInStr($sFileType, "Wise") Or StringInStr($sFileType, "PEncrypt 4.0")
+		Case StringInStr($sMatchType, "Wise") Or StringInStr($sMatchType, "PEncrypt 4.0")
 			extract($TYPE_WISE, 'Wise Installer ' & t('TERM_PACKAGE'))
 
-		Case StringInStr($sFileType, "ZIP SFX") Or (StringInStr($sFileType, "WinZip") And StringInStr($sFileType, "Sfx ver"))
+		Case StringInStr($sMatchType, "ZIP SFX") Or (StringInStr($sMatchType, "WinZip") And StringInStr($sMatchType, "Sfx ver"))
 			extract($TYPE_ZIP, t('TERM_SFX') & ' ZIP ' & t('TERM_ARCHIVE'))
 
-		Case StringInStr($sFileType, "Enigma Virtual Box")
+		Case StringInStr($sMatchType, "Enigma Virtual Box")
 			extract($TYPE_ENIGMA, 'Enigma Virtual Box ' & t('TERM_PACKAGE'))
 
-		Case StringInStr($sFileType, ".dmg  Mac OS")
+		Case StringInStr($sMatchType, ".dmg  Mac OS")
 			extract($TYPE_7Z, "DMG " & t('TERM_IMAGE'))
 
-		Case StringInStr($sFileType, ".pak  Chromium format")
+		Case StringInStr($sMatchType, ".pak  Chromium format")
 			extract($TYPE_7Z, "Chromium Pak " & t('TERM_ARCHIVE'))
 
-		Case StringInStr($sFileType, "Explorer cache file")
+		Case StringInStr($sMatchType, "Explorer cache file")
 			extract($TYPE_7Z, "Explorer Thumbnail " & t('TERM_DATABASE'))
 
-		Case StringInStr($sFileType, "PyInstaller")
+		Case StringInStr($sMatchType, "PyInstaller")
 			extract($TYPE_7Z, "PyInstaller " & t('TERM_PACKAGE'))
 
-		Case StringInStr($sFileType, "MSCF Cab file detected") Or StringInStr($sFileType, "VirtualBox Installer")
+		Case StringInStr($sMatchType, "MSCF Cab file detected") Or StringInStr($sMatchType, "VirtualBox Installer")
 			extract($TYPE_MSCF, "MSCF " & t('TERM_INSTALLER'))
 
-		Case StringInStr($sFileType, "aspack")
+		Case StringInStr($sMatchType, "aspack")
 			unpack($PACKER_ASPACK)
 
 		; Not supported
-		Case StringInStr($sFileType, "Astrum InstallWizard") Or StringInStr($sFileType, "clickteam") Or _
-			 StringInStr($sFileType, "NE <- Windows 16bit") Or StringInStr($sFileType, "Enigma Protector")
+		Case StringInStr($sMatchType, "Astrum InstallWizard") Or StringInStr($sMatchType, "clickteam") Or _
+			 StringInStr($sMatchType, "NE <- Windows 16bit") Or StringInStr($sMatchType, "Enigma Protector")
 			terminate($STATUS_NOTSUPPORTED, $file, $sFileType, $sFileType)
 
 		; Terminate if file cannot be unpacked
-		Case (StringInStr($sFileType, "Not packed") And Not StringInStr($sFileType, "Microsoft Visual C++")) Or _
-			  StringInStr($sFileType, "ELF executable") Or StringInStr($sFileType, "Microsoft Visual C# / Basic.NET") Or _
-			  StringInStr($sFileType, "Autoit") Or StringInStr($sFileType, "LE <- Linear Executable") Or _
-			  StringInStr($sFileType, "NOT EXE - Empty file") Or StringInStr($sFileType, "Native - System driver") Or _
-			  StringInStr($sFileType, "Denuvo protector") Or StringInStr($sFileType, "Kaspersky AV Pack") Or _
-			  StringInStr($sFileType, "TASM / MASM / FASM - assembler")
+		Case (StringInStr($sMatchType, "Not packed") And Not StringInStr($sMatchType, "Microsoft Visual C++")) Or _
+			  StringInStr($sMatchType, "ELF executable") Or StringInStr($sMatchType, "Microsoft Visual C# / Basic.NET") Or _
+			  StringInStr($sMatchType, "Autoit") Or StringInStr($sMatchType, "LE <- Linear Executable") Or _
+			  StringInStr($sMatchType, "NOT EXE - Empty file") Or StringInStr($sMatchType, "Native - System driver") Or _
+			  StringInStr($sMatchType, "Denuvo protector") Or StringInStr($sMatchType, "Kaspersky AV Pack") Or _
+			  StringInStr($sMatchType, "TASM / MASM / FASM - assembler")
 			terminate($STATUS_NOTPACKED, $file, $sFileType, $sFileType)
 
 		; Needs to be at the end, otherwise files might not be recognized
-		Case StringInStr($sFileType, "upx") And Not StringInStr($sFileType, "sign like")
+		Case StringInStr($sMatchType, "upx") And Not StringInStr($sMatchType, "sign like")
 			unpack($PACKER_UPX)
 
 		Case Else
-			UserDefCompare($aExeinfoDefinitions, $sFileType, "Exeinfo")
+			UserDefCompare($aExeinfoDefinitions, $sMatchType, "Exeinfo")
 	EndSelect
-
-	Cout("No matches for known Exeinfo PE types")
 EndFunc
 
 ; Scan file with PEiD
@@ -1826,6 +1855,61 @@ Func UserDefCompare(ByRef $aDefinitions, $sFileType, $sSection)
 	Next
 EndFunc
 
+; Normalize primary detector output so existing Exeinfo-style matching continues to work
+Func _NormalizeDetectorOutput($sFileType, $sScanner = "")
+	If $sScanner <> "Detect It Easy" Then Return $sFileType
+
+	Local $sMatchType = $sFileType
+
+	If StringInStr($sMatchType, "NSIS") And Not StringInStr($sMatchType, "Nullsoft") Then $sMatchType &= @CRLF & "Nullsoft"
+	If StringInStr($sMatchType, "Inno Setup") Then $sMatchType &= @CRLF & "Inno Setup"
+	If StringInStr($sMatchType, "InstallShield") Then $sMatchType &= @CRLF & "InstallShield"
+	If StringInStr($sMatchType, "MSI Installer") And Not StringInStr($sMatchType, "Microsoft Windows Installer") Then $sMatchType &= @CRLF & "Microsoft Windows Installer"
+	If StringInStr($sMatchType, "Installer database") And Not StringInStr($sMatchType, "Microsoft Windows Installer") Then $sMatchType &= @CRLF & "Microsoft Windows Installer"
+	If StringInStr($sMatchType, "Windows Installer XML Toolset") And Not StringInStr($sMatchType, "Microsoft Windows Installer") Then $sMatchType &= @CRLF & "Microsoft Windows Installer"
+	If StringInStr($sMatchType, "WiX Toolset") And Not StringInStr($sMatchType, "Microsoft Windows Installer") Then $sMatchType &= @CRLF & "Microsoft Windows Installer"
+	If StringInStr($sMatchType, "WiX") And Not StringInStr($sMatchType, "WiX Installer") Then $sMatchType &= @CRLF & "WiX Installer"
+	If StringInStr($sMatchType, "Advanced Installer") Then $sMatchType &= @CRLF & "Advanced Installer"
+	If StringInStr($sMatchType, "InstallAware") Then $sMatchType &= @CRLF & "InstallAware"
+	If StringInStr($sMatchType, "Setup Factory") Then $sMatchType &= @CRLF & "Setup Factory"
+	If StringInStr($sMatchType, "install4j") Then $sMatchType &= @CRLF & "install4j"
+	If StringInStr($sMatchType, "Wise") And Not StringInStr($sMatchType, "Wise Installer") Then $sMatchType &= @CRLF & "Wise Installer"
+	If StringInStr($sMatchType, "RAR") And StringInStr($sMatchType, "SFX") And Not StringInStr($sMatchType, "RAR SFX") Then $sMatchType &= @CRLF & "RAR SFX"
+	If StringInStr($sMatchType, "ZIP") And StringInStr($sMatchType, "SFX") And Not StringInStr($sMatchType, "ZIP SFX") Then $sMatchType &= @CRLF & "ZIP SFX"
+	If StringInStr($sMatchType, "CAB") And StringInStr($sMatchType, "SFX") And Not StringInStr($sMatchType, "Microsoft SFX CAB") Then $sMatchType &= @CRLF & "Microsoft SFX CAB"
+	If StringInStr($sMatchType, "Molebox") And Not StringInStr($sMatchType, "www.molebox.com") Then $sMatchType &= @CRLF & "www.molebox.com"
+	If StringInStr($sMatchType, "Thinstall") And Not StringInStr($sMatchType, "VMware ThinApp") Then $sMatchType &= @CRLF & "VMware ThinApp"
+	If StringInStr($sMatchType, "PyInstaller") Then $sMatchType &= @CRLF & "PyInstaller"
+	If StringInStr($sMatchType, "MSCF") And Not StringInStr($sMatchType, "MSCF Cab file detected") Then $sMatchType &= @CRLF & "MSCF Cab file detected"
+	If StringInStr($sMatchType, "UPX") And Not StringInStr($sMatchType, "upx") Then $sMatchType &= @CRLF & "upx"
+	If StringInStr($sMatchType, "ASPack") And Not StringInStr($sMatchType, "aspack") Then $sMatchType &= @CRLF & "aspack"
+	If StringInStr($sMatchType, ".NET") And Not StringInStr($sMatchType, "Microsoft Visual C# / Basic.NET") Then $sMatchType &= @CRLF & "Microsoft Visual C# / Basic.NET"
+	If StringInStr($sMatchType, "AutoIt") And Not StringInStr($sMatchType, "Autoit") Then $sMatchType &= @CRLF & "Autoit"
+
+	Return $sMatchType
+EndFunc
+
+Func _IsStrongPrimaryDetectorHit($sMatchType)
+	If StringIsSpace($sMatchType) Then Return False
+
+	Local Const $aStrongHits[] = [ _
+		"Inno Setup", "WinAce / SFX Factory", "Actual Installer", "Advanced Installer", "FreeArc", _
+		"CreateInstall", "Excelsior Installer", "Ghost Installer Studio", "Gentee Installer", _
+		"Installer VISE", "Setup Factory", "install4j", "InstallAware", "Install Creator/Pro", _
+		"InstallScript Setup Launcher", "InstallShield", "KGB SFX", "www.molebox.com", _
+		"Netopsystems AG INSTALLER FEAD", "Nullsoft", "RAR SFX", "RoboForm Installer", _
+		"Microsoft Windows Installer", "SPx Method", "Microsoft SFX CAB", "Overlay :  SWF flash object ver", _
+		"VMware ThinApp", "Thinstall", "ThinyApp Packager", "Wise Installer", "PEncrypt 4.0", _
+		"ZIP SFX", "WinZip", "Enigma Virtual Box", ".dmg  Mac OS", ".pak  Chromium format", _
+		"Explorer cache file", "VirtualBox Installer" ]
+
+	For $sNeedle In $aStrongHits
+		If StringInStr($sMatchType, $sNeedle) Then Return True
+	Next
+
+	Return False
+EndFunc
+
 ; Open ExeInfo PE and return an array containing initial registry values
 Func OpenExeInfo($f = $file)
 	Local $aReturn[12]
@@ -1932,7 +2016,7 @@ Func check7z($arcdisp = 0, $bIsDiskImage = False, $returnSuccess = False, $retur
 	If StringInStr($return, "Listing archive:") And Not (StringInStr($return, "Errors: ") And StringInStr($return, "Can not open the file as ")) Then
 		_DeleteTrayMessageBox()
 		If $bIsDiskImage Then
-			Return extractDiskImage($TYPE_7Z, $arcdisp)
+			Return extractDiskImage($TYPE_7Z, $arcdisp, "", $returnSuccess, $returnFail)
 		ElseIf $arcdisp Then
 			Return extract($TYPE_7Z, $arcdisp, "", $returnSuccess, $returnFail)
 		ElseIf $fileext = "exe" Then
@@ -1950,7 +2034,7 @@ Func check7z($arcdisp = 0, $bIsDiskImage = False, $returnSuccess = False, $retur
 EndFunc
 
 ; Determine if file is ALZip archive
-Func CheckAlz()
+Func CheckAlz($returnSuccess = False, $returnFail = False)
 	Cout("Testing ALZ")
 
 	_CreateTrayMessageBox(t('TERM_TESTING') & ' ALZ ' & t('TERM_ARCHIVE'))
@@ -1958,7 +2042,7 @@ Func CheckAlz()
 
 	_DeleteTrayMessageBox()
 	If StringInStr($return, "Listing archive:") And Not (StringInStr($return, "corrupted file") _
-	Or StringInStr($return, "file open error")) Then extract($TYPE_ALZ, -1)
+	Or StringInStr($return, "file open error")) Then Return extract($TYPE_ALZ, -1, "", $returnSuccess, $returnFail)
 
 	Return False
 EndFunc
@@ -2218,6 +2302,27 @@ Func CheckExt()
 	Next
 EndFunc
 
+; Perform non-fatal extension-based extraction attempts before detector-based routing.
+Func _TryExtExtract($arctype, $arcdisp = 0, $additionalParameters = "")
+	If extract($arctype, $arcdisp, $additionalParameters, True, True) Then terminate($STATUS_SUCCESS, $filenamefull, $arctype, $arcdisp)
+	Return False
+EndFunc
+
+Func _TryExtDiskImage($arctype, $arcdisp = 0, $additionalParameters = "")
+	If extractDiskImage($arctype, $arcdisp, $additionalParameters, True, True) Then terminate($STATUS_SUCCESS, $filenamefull, $arctype, $arcdisp)
+	Return False
+EndFunc
+
+Func _TryExtCheck7z($arcdisp = 0, $bIsDiskImage = False)
+	If check7z($arcdisp, $bIsDiskImage, True, True) Then terminate($STATUS_SUCCESS, $filenamefull, $TYPE_7Z, $arcdisp)
+	Return False
+EndFunc
+
+Func _TryExtCheckAlz()
+	If CheckAlz(True, True) Then terminate($STATUS_SUCCESS, $filenamefull, $TYPE_ALZ, 'ALZ ' & t('TERM_ARCHIVE'))
+	Return False
+EndFunc
+
 ; Perform special actions for some file types
 Func InitialCheckExt()
 	If Not $extract Then Return
@@ -2225,22 +2330,129 @@ Func InitialCheckExt()
 	Switch $fileext
 		; Split files have no additional file magic and will be misdetected
 		Case "001"
-			If FileExists($filedir & "\" & $filename & ".002") Then check7z()
+			If FileExists($filedir & "\" & $filename & ".002") Then _TryExtCheck7z()
+
 		; Compound compressed files that require multiple actions
 		Case "ipk", "tbz2", "tgz", "tz", "tlz", "txz"
-			extract($TYPE_CTAR, 'Compressed Tar ' & t('TERM_ARCHIVE'))
+			_TryExtExtract($TYPE_CTAR, 'Compressed Tar ' & t('TERM_ARCHIVE'))
+
 		; Disk images - file type identification is not always reliable
 		Case "bin", "cdi", "mdf"
-			CheckIso()
-			check7z(t('TERM_DISK_IMAGE'), True)
-		Case "dmg"
-			extract($TYPE_7Z, 'DMG ' & t('TERM_IMAGE'))
+			If CheckIso(True, True) Then terminate($STATUS_SUCCESS, $filenamefull, $TYPE_QBMS, t('TERM_DISK_IMAGE'))
+			_TryExtCheck7z(t('TERM_DISK_IMAGE'), True)
 		Case "cue", "gdi", "iso", "mds"
-			check7z(t('TERM_DISK_IMAGE'), True)
-			CheckIso()
+			If Not _TryExtCheck7z(t('TERM_DISK_IMAGE'), True) Then
+				If CheckIso(True, True) Then terminate($STATUS_SUCCESS, $filenamefull, $TYPE_QBMS, t('TERM_DISK_IMAGE'))
+			EndIf
+
+		; Direct extension-first routing for exact/strong extensions.
+		; These are non-fatal probes. If they fail, normal DIE/TrID detection continues.
+		Case "7z"
+			_TryExtExtract($TYPE_7Z, '7-Zip ' & t('TERM_ARCHIVE'))
+		Case "apk"
+			_TryExtExtract($TYPE_7Z, "Android " & t('TERM_PACKAGE'))
+		Case "ar"
+			_TryExtExtract($TYPE_7Z, 'AR ' & t('TERM_ARCHIVE'))
+		Case "arj"
+			_TryExtExtract($TYPE_7Z, 'ARJ ' & t('TERM_ARCHIVE'))
+		Case "asar"
+			_TryExtExtract($TYPE_7Z, 'ASAR ' & t('TERM_ARCHIVE'))
+		Case "bz2"
+			_TryExtExtract($TYPE_7Z, 'bzip2 ' & t('TERM_COMPRESSED'), "bz2")
+		Case "cpio"
+			_TryExtExtract($TYPE_7Z, 'CPIO ' & t('TERM_ARCHIVE'))
+		Case "deb"
+			_TryExtExtract($TYPE_7Z, 'Debian ' & t('TERM_PACKAGE'))
+		Case "dmg"
+			_TryExtExtract($TYPE_7Z, 'DMG ' & t('TERM_IMAGE'))
+		Case "gz", "gzip"
+			_TryExtExtract($TYPE_7Z, 'gzip ' & t('TERM_COMPRESSED'), "gz")
+		Case "lha", "lzh"
+			_TryExtExtract($TYPE_7Z, 'LZH ' & t('TERM_COMPRESSED'))
+		Case "rpm"
+			_TryExtExtract($TYPE_7Z, 'RPM ' & t('TERM_PACKAGE'))
+		Case "tar"
+			_TryExtExtract($TYPE_7Z, 'Tar ' & t('TERM_ARCHIVE'), "tar")
+		Case "wim"
+			_TryExtExtract($TYPE_7Z, 'WIM ' & t('TERM_IMAGE'))
+		Case "xz"
+			_TryExtExtract($TYPE_7Z, 'XZ ' & t('TERM_COMPRESSED'), "xz")
+		Case "z"
+			_TryExtExtract($TYPE_7Z, 'LZW ' & t('TERM_COMPRESSED'), "Z")
+		Case "ace"
+			_TryExtExtract($TYPE_ACE, 'ACE ' & t('TERM_ARCHIVE'))
+		Case "alz"
+			_TryExtCheckAlz()
+		Case "bcm"
+			_TryExtExtract($TYPE_BCM, 'BCM ' & t('TERM_COMPRESSED'))
+		Case "cab"
+			_TryExtExtract($TYPE_CAB, 'Microsoft CAB ' & t('TERM_ARCHIVE'))
+		Case "chd"
+			_TryExtDiskImage($TYPE_CHD, "MAME " & t('TERM_DISK_IMAGE'))
+		Case "chm"
+			_TryExtExtract($TYPE_CHM, 'Compiled HTML ' & t('TERM_HELP'))
+		Case "daa", "gbi"
+			_TryExtDiskImage($TYPE_DAA, 'DAA/GBI ' & t('TERM_DISK_IMAGE'))
+		Case "dgca"
+			_TryExtExtract($TYPE_DGCA, 'DGCA ' & t('TERM_ARCHIVE'))
+		Case "farc", "arc"
+			_TryExtExtract($TYPE_FREEARC, 'FreeArc ' & t('TERM_ARCHIVE'))
+		Case "hlp"
+			_TryExtExtract($TYPE_HLP, 'Windows ' & t('TERM_HELP'))
+		Case "isz"
+			_TryExtDiskImage($TYPE_ISZ, "Zipped ISO " & t('TERM_DISK_IMAGE'))
+		Case "kgb"
+			_TryExtExtract($TYPE_KGB, 'KGB ' & t('TERM_ARCHIVE'))
+		Case "lz"
+			_TryExtExtract($TYPE_LZ, "LZIP " & t('TERM_COMPRESSED'))
+		Case "lzo"
+			_TryExtExtract($TYPE_LZO, 'LZO ' & t('TERM_COMPRESSED'))
+		Case "lzx"
+			_TryExtExtract($TYPE_LZX, 'LZX ' & t('TERM_COMPRESSED'))
+		Case "mht", "mhtml"
+			_TryExtExtract($TYPE_7Z, 'MHTML ' & t('TERM_ARCHIVE'))
+		Case "msi"
+			_TryExtExtract($TYPE_MSI, 'Windows Installer (MSI) ' & t('TERM_PACKAGE'))
+		Case "msm"
+			_TryExtExtract($TYPE_MSM, 'Windows Installer (MSM) ' & t('TERM_MERGE_MODULE'))
+		Case "msp"
+			_TryExtExtract($TYPE_MSP, 'Windows Installer (MSP) ' & t('TERM_PATCH'))
+		Case "msu"
+			_TryExtExtract($TYPE_MSU, 'Windows Update ' & t('TERM_PACKAGE'))
+		Case "nbh"
+			_TryExtExtract($TYPE_NBH, 'NBH ' & t('TERM_IMAGE'))
+		Case "pea"
+			_TryExtExtract($TYPE_PEA, 'Pea ' & t('TERM_ARCHIVE'))
+		Case "pdf"
+			_TryExtExtract($TYPE_PDF, 'PDF ' & t('TERM_FILE'))
+		Case "rar"
+			_TryExtExtract($TYPE_RAR, 'RAR ' & t('TERM_ARCHIVE'))
+		Case "rpa"
+			_TryExtExtract($TYPE_RPA, "Ren'Py " & t('TERM_ARCHIVE'))
+		Case "sfark"
+			_TryExtExtract($TYPE_SFARK, 'sfArk ' & t('TERM_COMPRESSED'))
+		Case "sis"
+			_TryExtExtract($TYPE_SIS, 'SymbianOS ' & t('TERM_INSTALLER'))
+		Case "swf"
+			_TryExtExtract($TYPE_SWF, 'Shockwave Flash ' & t('TERM_CONTAINER'))
+		Case "ttarch"
+			_TryExtExtract($TYPE_TTARCH, "Telltale " & t('TERM_GAME') & t('TERM_ARCHIVE'))
+		Case "uha"
+			_TryExtExtract($TYPE_UHA, 'UHARC ' & t('TERM_ARCHIVE'))
+		Case "uif"
+			_TryExtDiskImage($TYPE_UIF, 'UIF ' & t('TERM_DISK_IMAGE'))
 		Case "unitypackage"
-			extract($TYPE_UNITYPACKAGE, "Unity Engine Asset Package")
+			_TryExtExtract($TYPE_UNITYPACKAGE, "Unity Engine Asset Package")
+		Case "warc"
+			_TryExtExtract($TYPE_7Z, "Web " & t('TERM_ARCHIVE'))
+		Case "zip"
+			_TryExtExtract($TYPE_ZIP, 'ZIP ' & t('TERM_ARCHIVE'))
+		Case "zoo"
+			_TryExtExtract($TYPE_ZOO, 'ZOO ' & t('TERM_ARCHIVE'))
+		Case "zpaq"
+			_TryExtExtract($TYPE_ZPAQ, 'ZPAQ ' & t('TERM_ARCHIVE'))
 	EndSwitch
+
 EndFunc
 
 ; Check for unicode characters in path
@@ -3476,13 +3688,17 @@ Func extract($arctype, $arcdisp = 0, $additionalParameters = "", $returnSuccess 
 EndFunc
 
 ; Extract disk images and convert then if necessary
-Func extractDiskImage($arctype, $arcdisp = 0, $additionalParameters = "")
+Func extractDiskImage($arctype, $arcdisp = 0, $additionalParameters = "", $returnSuccess = False, $returnFail = False)
 	Cout("Extracting disk image")
-	extract($arctype, $arcdisp, $additionalParameters, True)
+	If Not extract($arctype, $arcdisp, $additionalParameters, True, True) Then
+		If $returnFail Then Return False
+		terminate($STATUS_FAILED, $file, $arctype, $arcdisp)
+	EndIf
 
 	Local $sFile = _FileSearchFirstMultiExtension($outdir, $filename, "iso;cue;bin;mdf;mds;ccd;nrg;img")
 	If @error Then
 		Cout("The disk image was extracted directly, no conversion necessary")
+		If $returnSuccess Then Return True
 		terminate($STATUS_SUCCESS, $filenamefull, $arctype, $arcdisp)
 	EndIf
 
@@ -3490,12 +3706,19 @@ Func extractDiskImage($arctype, $arcdisp = 0, $additionalParameters = "")
 	_CreateTrayMessageBox(t('EXTRACTING') & @CRLF & StringUpper($arctype) & " " & t('TERM_DISK_IMAGE') & ' (' & t('TERM_STAGE') & ' 2)')
 	$file = $sFile
 
+	Local $bStage2Success = False
 	If CheckIso(True, True) Or check7z(t('TERM_DISK_IMAGE'), False, True, True) Then
+		$bStage2Success = True
 		_FileDelete($sFile)
 	Else
 		AddWarning(t('WARN_CONVERSION_FAILED'))
 	EndIf
 
+	If $returnSuccess Then Return $bStage2Success
+	If Not $bStage2Success Then
+		If $returnFail Then Return False
+		terminate($STATUS_FAILED, $filenamefull, $arctype, $arcdisp)
+	EndIf
 	terminate($STATUS_SUCCESS, $filenamefull, $arctype, $arcdisp)
 EndFunc
 
@@ -4198,7 +4421,7 @@ Func terminate($status, $fname = '', $arctype = '', $arcdisp = '')
 			Prompt(16, 'INVALID_DIR', $fname)
 			$exitcode = 5
 		Case $STATUS_NOTPACKED
-			Prompt(48, 'NOT_PACKED', CreateArray($file, $sFileType))
+			Cout("Suppressed NOTPACKED dialog for: " & $file & " (" & $sFileType & ")")
 			$exitcode = 6
 		Case $STATUS_NOTSUPPORTED
 			GUI_Error_WithFeedbackButton("NOT_SUPPORTED_TITLE", t('NOT_SUPPORTED', $filename))
@@ -7775,7 +7998,7 @@ Func GUI_Error_UnknownExt()
 				GUI_Feedback()
 				ExitLoop
 			Case $idImage
-				Run($exeinfope & ' "' & $file & '"', $filedir)
+				Run((FileExists($diegui_path)? $diegui: $exeinfope) & ' "' & $file & '"', $filedir)
 		EndSwitch
 	WEnd
 
