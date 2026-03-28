@@ -3,8 +3,8 @@
 #AutoIt3Wrapper_Outfile=.\UniExtract.exe
 #AutoIt3Wrapper_Res_Description=Universal Extractor
 #AutoIt3Wrapper_Res_ProductName=Universal Extractor
-#AutoIt3Wrapper_Res_Fileversion=2.0.0.1
-#AutoIt3Wrapper_Res_ProductVersion=2.0.0.0
+#AutoIt3Wrapper_Res_Fileversion=2.1.0.0
+#AutoIt3Wrapper_Res_ProductVersion=2.1.0.0
 #AutoIt3Wrapper_Res_CompanyName=Legroom.net
 #AutoIt3Wrapper_Res_Language=1033
 #AutoIt3Wrapper_Res_LegalCopyright=GNU General Public License v2
@@ -71,8 +71,8 @@
 #include "Pie.au3"
 
 Const $name = "Universal Extractor"
-Const $sVersion = "2.0.0 RC5"
-Const $sVersionId = "2R5"
+Const $sVersion = "2.1.0 RC6"
+Const $sVersionId = "2R6"
 Const $sCodename = "New Start"
 Const $title = $name & " " & $sVersion
 Const $sUrlWebsiteOriginal = "https://www.legroom.net/software/uniextract"
@@ -230,7 +230,7 @@ Const $expand = Quote(@SystemDir & "\expand.exe", True)
 Const $filetool = Quote($bindir & "file.exe", True)
 Const $freearc = "unarc.exe"
 Const $fsb = "fsbext.exe"
-Const $garbro = Quote($bindir & "GARbro\GARbro.Console.exe", True)
+Const $garbro = $bindir & "GARbro\GARbro.Console.exe"
 Const $gcf = $archdir & "GCFScape.exe"
 Const $hlp = "helpdeco.exe"
 Const $innoextract = Quote($bindir & "innoextract.exe", True)
@@ -1865,7 +1865,11 @@ Func tridcompare($sFileType)
 			extract($TYPE_FREEARC, 'FreeArc ' & t('TERM_ARCHIVE'))
 
 		Case StringInStr($sFileType, "InstallShield setup")
-			extract($TYPE_ISEXE, 'InstallShield ' & t('TERM_INSTALLER'))
+			If _HasCorroboratedInstallShieldHit() Then
+				extract($TYPE_ISEXE, 'InstallShield ' & t('TERM_INSTALLER'))
+			Else
+				Cout("Ignoring weak TrID InstallShield match without corroboration")
+			EndIf
 
 		Case StringInStr($sFileType, "audio") Or StringInStr($sFileType, "FLAC lossless")
 			extract($TYPE_AUDIO, t('TERM_AUDIO') & ' ' & t('TERM_FILE'))
@@ -1951,6 +1955,14 @@ Func _NormalizeDetectorOutput($sFileType, $sScanner = "")
 	If StringInStr($sMatchType, "AutoIt") And Not StringInStr($sMatchType, "Autoit") Then $sMatchType &= @CRLF & "Autoit"
 
 	Return $sMatchType
+EndFunc
+
+Func _HasCorroboratedInstallShieldHit()
+	For $i = 0 To UBound($aFiletype) - 1
+		If $aFiletype[$i][0] = "TrID" Then ContinueLoop
+		If StringInStr($aFiletype[$i][1], "InstallShield") Or StringInStr($aFiletype[$i][1], "InstallScript") Then Return True
+	Next
+	Return False
 EndFunc
 
 Func _IsStrongPrimaryDetectorHit($sMatchType)
@@ -2077,7 +2089,7 @@ Func check7z($arcdisp = 0, $bIsDiskImage = False, $returnSuccess = False, $retur
 	_CreateTrayMessageBox(t('TERM_TESTING') & " " & ($arcdisp == 0? "7-Zip": $arcdisp))
 	Local $return = FetchStdout($7z & ' l "' & $file & '"', $filedir, @SW_HIDE)
 
-	If StringInStr($return, "Listing archive:") And Not (StringInStr($return, "Errors: ") And StringInStr($return, "Can not open the file as ")) Then
+	If StringInStr($return, "Listing archive:") And Not (StringInStr($return, "Errors:") And (StringInStr($return, "Can not open the file as") Or StringInStr($return, "Cannot open the file as archive"))) Then
 		_DeleteTrayMessageBox()
 		If $bIsDiskImage Then
 			Return extractDiskImage($TYPE_7Z, $arcdisp, "", $returnSuccess, $returnFail)
@@ -2206,9 +2218,11 @@ Func CheckGarbro($arcdisp = 0)
 	HasNetFramework(4.6)
 	Cout("Testing GARbro")
 	_CreateTrayMessageBox(t('TERM_TESTING') & ' GARbro ' & t('TERM_ARCHIVE'))
-	Local $return = FetchStdout(@ComSpec & ' /d /c ""' & $garbro & '" l "' & $file & '" || "' & $garbro & '" list "' & $file & '""', $filedir, @SW_HIDE)
+	Local $sGarbroListCmd = Quote(Quote($garbro) & ' l "' & $file & '" || ' & Quote($garbro) & ' list "' & $file & '"')
+	Local $return = FetchStdout(@ComSpec & ' /d /c ' & $sGarbroListCmd, $filedir, @SW_HIDE)
 	If Not @error And Not StringInStr($return, "Error: Input file has an unknown format") And Not StringInStr($return, "Error: Archive is empty") Then
-		$return = StringStripWS(StringStripCR(FetchStdout(@ComSpec & ' /d /c ""' & $garbro & '" i "' & $file & '" || "' & $garbro & '" info "' & $file & '""', $filedir, @SW_HIDE, -1)), 8)
+		Local $sGarbroInfoCmd = Quote(Quote($garbro) & ' i "' & $file & '" || ' & Quote($garbro) & ' info "' & $file & '"')
+		$return = StringStripWS(StringStripCR(FetchStdout(@ComSpec & ' /d /c ' & $sGarbroInfoCmd, $filedir, @SW_HIDE, -1)), 8)
 		If $return == "ZIP" Then check7z()
 
 		extract($TYPE_GARBRO, $arcdisp? $arcdisp: $return & ' ' & t('TERM_GAME') & t('TERM_FILE'))
@@ -2265,8 +2279,11 @@ Func checkInno()
 
 	$g_bInnoExtractUsable = _InnoExtractProbeUsable($sProbe)
 
-	Local $sGogId = StringStripWS(FetchStdout($innoextract & ' --gog-game-id --silent "' & $file & '"', $filedir, @SW_HIDE), 3)
-	Local $bGog = ($sGogId <> "")
+	Local $sGogRaw = StringStripWS(FetchStdout($innoextract & ' --gog-game-id --silent "' & $file & '"', $filedir, @SW_HIDE), 3)
+	Local $bGog = False
+	If $sGogRaw <> "" And Not StringInStr($sGogRaw, "No GOG.com game ID found", 0) And Not StringInStr($sGogRaw, "Warning:", 0) And Not StringInStr($sGogRaw, "Done with", 0) And Not StringInStr($sGogRaw, "error", 0) Then
+		$bGog = True
+	EndIf
 
 	Return extract($TYPE_INNO, "Inno Setup " & t('TERM_INSTALLER'), $bGog)
 EndFunc
@@ -2316,7 +2333,7 @@ Func checkNSIS()
 	_CreateTrayMessageBox(t('TERM_TESTING') & ' NSIS ' & t('TERM_INSTALLER'))
 
 	Local $return = FetchStdout($7z & ' l "' & $file & '"', $filedir, @SW_HIDE)
-	If StringInStr($return, "Listing archive:") And Not StringInStr($return, "Can not open the file as") Then _
+	If StringInStr($return, "Listing archive:") And Not (StringInStr($return, "Can not open the file as") Or StringInStr($return, "Cannot open the file as archive") Or StringInStr($return, "Errors:")) Then _
 		extract($TYPE_NSIS, "NSIS " & t('TERM_INSTALLER'))
 
 	_DeleteTrayMessageBox()
@@ -2871,7 +2888,8 @@ Func extract($arctype, $arcdisp = 0, $additionalParameters = "", $returnSuccess 
 			Cleanup("*.ogg")
 
 		Case $TYPE_GARBRO
-			_Run(@ComSpec & ' /d /c ""' & $garbro & '" x -ocu -if png -o "' & $outdir & '" "' & $file & '" || "' & $garbro & '" extract -ocu -if png -o "' & $outdir & '" "' & $file & '""', $outdir, @SW_MINIMIZE)
+			Local $sGarbroExtractCmd = Quote(Quote($garbro) & ' x -ocu -if png -o "' & $outdir & '" "' & $file & '" || ' & Quote($garbro) & ' extract -ocu -if png -o "' & $outdir & '" "' & $file & '"')
+			_Run(@ComSpec & ' /d /c ' & $sGarbroExtractCmd, $outdir, @SW_MINIMIZE)
 
 		Case $TYPE_GHOST
 			$ret = $outdir & "\" & $filename & ".exe"
