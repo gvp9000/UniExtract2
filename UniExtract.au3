@@ -16,6 +16,7 @@
 #AutoIt3Wrapper_AU3Check_Stop_OnWarning=y
 #AutoIt3Wrapper_AU3Check_Parameters=-w 4 -w 5
 #AutoIt3Wrapper_Run_Au3Stripper=n
+#AutoIt3Wrapper_UseX64=n
 #Au3Stripper_Parameters=/mo
 #EndRegion ;**** Directives created by AutoIt3Wrapper_GUI ****
 
@@ -928,7 +929,21 @@ Func FileScan_Trid($analyze = 1)
 	If $extract Then
 		Local $iResults = TridLib_Analyse($file)
 
-		If $iResults = 0 Then
+		If @error Then
+			Cout("TrIDLib unavailable, falling back to trid.exe")
+			Local $aReturn = StringSplit(FetchStdout($trid & ' "' & $file & '"' & ($analyze? "": " -v"), $filedir, @SW_HIDE, 0, True, False), @CRLF)
+			Local $sFileType = ""
+			For $i = 1 To UBound($aReturn) - 1
+				If StringInStr($aReturn[$i], "%") Or (Not $analyze And (StringInStr($aReturn[$i], "Related URL") Or StringInStr($aReturn[$i], "Remarks"))) Then _
+					$sFileType &= $aReturn[$i] & @CRLF
+			Next
+			If $sFileType <> "" Then
+				_FiletypeAdd("TrID", $sFileType)
+				If $analyze Then tridcompare($sFileType)
+			Else
+				Cout("Unknown filetype!")
+			EndIf
+		ElseIf $iResults = 0 Then
 			Cout("Unknown filetype!")
 		Else
 			For $i = 1 To $iResults
@@ -966,10 +981,47 @@ Func TridLib_Load()
 	If $hTridDll Then Return True
 	Cout("Loading TridLib")
 
-	$hTridDll = DllOpen($bindir & "TrIDLib.dll")
+	Local $sTridDll = $bindir & "TrIDLib.dll"
+	Local $sTridDefs = $bindir & "TrIDDefs.TRD"
+	If Not FileExists($sTridDll) Then
+		Cout("TrIDLib.dll not found: " & $sTridDll)
+		Return SetError(1, 0, False)
+	EndIf
+	If Not FileExists($sTridDefs) Then
+		Cout("TrIDDefs.TRD not found: " & $sTridDefs)
+		Return SetError(1, 0, False)
+	EndIf
+
+	; Harden DLL loading: ensure bin folder is on PATH and current directory during load
+	Local $sPrevPath = EnvGet("PATH")
+	Local $sPrevDir = @WorkingDir
+	EnvSet("PATH", $bindir & ";" & $sPrevPath)
+	FileChangeDir($bindir)
+
+	$hTridDll = DllOpen($sTridDll)
+
+	; Restore process state immediately after load attempt
+	FileChangeDir($sPrevDir)
+	EnvSet("PATH", $sPrevPath)
+
+	If $hTridDll = -1 Then
+		$hTridDll = 0
+		Cout("Failed to open TridLib.dll: " & $sTridDll)
+		Cout("TrIDLib loader hardening applied (PATH + cwd), still failed; using trid.exe fallback")
+		Return SetError(1, 0, False)
+	EndIf
+
 	Local $aReturn = DllCall($hTridDll, "int", "TrID_LoadDefsPack", "str", $bindir)
-	If @error Or $aReturn[0] < 1 Then
-		Cout("Failed to load Trid definitions")
+	If @error Then
+		Cout("TrID_LoadDefsPack call failed")
+		DllClose($hTridDll)
+		$hTridDll = 0
+		Return SetError(1, 0, False)
+	EndIf
+	If $aReturn[0] < 1 Then
+		Cout("Failed to load Trid definitions from: " & $sTridDefs)
+		DllClose($hTridDll)
+		$hTridDll = 0
 		Return SetError(1, 0, False)
 	EndIf
 
@@ -1290,6 +1342,18 @@ Func FileScan_ExeInfo($bUseCmd = $extract)
 
 		Case StringInStr($sMatchType, "MSCF Cab file detected") Or StringInStr($sMatchType, "VirtualBox Installer")
 			extract($TYPE_MSCF, "MSCF " & t('TERM_INSTALLER'))
+
+		; Route media files detected by Exeinfo/DiE directly to video extraction
+		Case StringInStr($sMatchType, "NOT EXE - .mp4") Or StringInStr($sMatchType, "NOT EXE - .m4v") Or _
+			 StringInStr($sMatchType, "MPEG-4") Or StringInStr($sMatchType, "QuickTime Movie") Or _
+			 StringInStr($sMatchType, "Matroska") Or StringInStr($sMatchType, "Windows Media (generic)") Or _
+			 StringInStr($sMatchType, "MPEG-2 Transport Stream") Or StringInStr($sMatchType, "Bink video") Or _
+			 StringInStr($sMatchType, "Smacker movie/video")
+			If StringInStr($sMatchType, "Bink video") Or StringInStr($sMatchType, "Smacker movie/video") Then
+				extract($TYPE_VIDEO_CONVERT, t('TERM_VIDEO') & ' ' & t('TERM_FILE'))
+			Else
+				extract($TYPE_VIDEO, t('TERM_VIDEO') & ' ' & t('TERM_FILE'))
+			EndIf
 
 		Case StringInStr($sMatchType, "aspack")
 			unpack($PACKER_ASPACK)
@@ -2241,14 +2305,9 @@ Func CheckLessmsi()
 
 	Cout("Testing lessmsi")
 
-	; Newer lessmsi versions expect the table name as a positional argument,
-	; while older versions used -t <TableName>. Try the modern syntax first,
-	; then fall back to the legacy syntax for compatibility.
-	Local $return = FetchStdout($msi_lessmsi & ' l "' & $file & '" File', $outdir)
-	If StringInStr($return, "Error: ") Or StringStripWS($return, 8) == "" Then _
-		$return = FetchStdout($msi_lessmsi & ' l -t File "' & $file & '"', $outdir)
+	Local $return = FetchStdout($msi_lessmsi & ' l -t File "' & $file & '"', $outdir)
 
-	Return Not StringInStr($return, "Error: ") And StringStripWS($return, 8) <> ""
+	Return StringInStr($return, "File,Component_,FileName") > 0
 EndFunc
 
 ; Determine if file is NSIS installer
@@ -2337,9 +2396,16 @@ Func InitialCheckExt()
 			_TryExtExtract($TYPE_CTAR, 'Compressed Tar ' & t('TERM_ARCHIVE'))
 
 		; Disk images - file type identification is not always reliable
-		Case "bin", "cdi", "mdf"
+		Case "bin"
+			; Try generic archive handling before ISO/WCX probing.
+			; This avoids sending ZIP/RAR/7z content in .bin files through QuickBMS first.
+			If _TryExtCheck7z() Then Return
+			If CheckIso(True, True) Then terminate($STATUS_SUCCESS, $filenamefull, $TYPE_QBMS, t('TERM_DISK_IMAGE'))
+
+		Case "cdi", "mdf"
 			If CheckIso(True, True) Then terminate($STATUS_SUCCESS, $filenamefull, $TYPE_QBMS, t('TERM_DISK_IMAGE'))
 			_TryExtCheck7z(t('TERM_DISK_IMAGE'), True)
+			
 		Case "cue", "gdi", "iso", "mds"
 			If Not _TryExtCheck7z(t('TERM_DISK_IMAGE'), True) Then
 				If CheckIso(True, True) Then terminate($STATUS_SUCCESS, $filenamefull, $TYPE_QBMS, t('TERM_DISK_IMAGE'))
@@ -2557,7 +2623,7 @@ Func extract($arctype, $arcdisp = 0, $additionalParameters = "", $returnSuccess 
 				If FileExists($sPath) Then
 					Local $sReturn = TridLib_Analyse_Simple($sPath)
 					If StringInStr($sReturn, "Tape ARchive") Or StringRight($sPath, 3) = "tar" Then
-						_Run($7z & ' x "' & $sPath & '"', $outdir)
+						_Run($7z & ' x -y -o"' & $outdir & '" "' & $sPath & '"', $outdir)
 						FileDelete($sPath)
 					EndIf
 				EndIf
@@ -2684,7 +2750,7 @@ Func extract($arctype, $arcdisp = 0, $additionalParameters = "", $returnSuccess 
 			_Run($chd & ' extracthd -i "' & $file & '" -o "' & $outdir & '\' & $filename & '.img"', $outdir)
 
 		Case $TYPE_CHM
-			_Run($7z & ' x "' & $file & '"', $outdir)
+			_Run($7z & ' x -y -o"' & $outdir & '" "' & $file & '"', $outdir)
 			Local $aCleanup[] = ['#*', '$*']
 			Cleanup($aCleanup)
 			$hSearch = FileFindFirstFile($outdir & '\*')
@@ -2720,7 +2786,7 @@ Func extract($arctype, $arcdisp = 0, $additionalParameters = "", $returnSuccess 
 			$oldfiles = ReturnFiles($outdir)
 
 			; Decompress archive with 7-zip
-			_Run($7z & ' x "' & $file & '"', $outdir)
+			_Run($7z & ' x -y -o"' & $outdir & '" "' & $file & '"', $outdir)
 
 			; Check for new files
 			Local $aFiles = _FileListToArray($outdir, "*", $FLTA_FILES)
@@ -2885,6 +2951,12 @@ Func extract($arctype, $arcdisp = 0, $additionalParameters = "", $returnSuccess 
 
 				Local $aCleanup[] = ["install_script.iss", "setup.iss"]
 				Cleanup($aCleanup)
+
+				; Inno success must be based on extracted output, not only tool log wording.
+				If _DirGetSize($outdir, $initdirsize + 1) > $initdirsize Or FileGetTime($outdir, 0, 1) <> $dirmtime Then
+					Cout("Inno extraction success (output detected)")
+					$success = $RESULT_SUCCESS
+				EndIf
 			EndIf
 
 			If ($additionalParameters Or $success == $RESULT_FAILED) And $g_bInnoExtractUsable Then
@@ -2892,6 +2964,12 @@ Func extract($arctype, $arcdisp = 0, $additionalParameters = "", $returnSuccess 
 				Local $aCleanup[] = ["embedded", "tmp", "commonappdata", "cf", "cf32", "group", "userappdata", "userdocs"]
 				Cleanup($aCleanup)
 				MoveFiles($outdir & "\app", $outdir, True, "", True)
+
+				; Fallback innoextract path: mark success if files were actually produced.
+				If _DirGetSize($outdir, $initdirsize + 1) > $initdirsize Or FileGetTime($outdir, 0, 1) <> $dirmtime Then
+					Cout("Inno fallback extraction success (output detected)")
+					$success = $RESULT_SUCCESS
+				EndIf
 			EndIf
 
 		Case $TYPE_ISCAB
@@ -4485,9 +4563,10 @@ Func terminate($status, $fname = '', $arctype = '', $arcdisp = '')
 
 	Cout("Terminating - Status: " & $status)
 
-	; Create log file if enabled in options
+	; Create log file if enabled in options.
+	; Unknown / unsupported / not-packed files must also get logs so they are visible in single and batch runs.
 	If $bOptCreateLog And Not $bLogSaved And Not ($status = $STATUS_SILENT Or $status = $STATUS_SYNTAX Or $status = $STATUS_FILEINFO Or _
-	   $status = $STATUS_NOTPACKED Or $status = $STATUS_BATCH) Or ($status = $STATUS_FILEINFO And $silentmode) Then _
+	   $status = $STATUS_BATCH) Or ($status = $STATUS_FILEINFO And $silentmode) Then _
 		SaveLog($shortStatus)
 
 	If $batchEnabled = 1 And $status <> $STATUS_SILENT Then ; Don't start batch if gui is closed
@@ -4676,17 +4755,39 @@ EndFunc
 ; Read batch queue from file
 Func GetBatchQueue()
 	Local $hFile = FileOpen($batchQueue, $FO_UNICODE)
-	$queueArray = FileReadToArray($hFile)
+	If $hFile = -1 Then
+		$queueArray = 0
+		If $guimain Then GUICtrlSetData($BatchBut, t('BATCH_BUT'))
+		Return 0
+	EndIf
+
+	Local $sContent = FileRead($hFile)
 	FileClose($hFile)
 
-	Local $iSize = UBound($queueArray)
-	If IsArray($queueArray) And $iSize > 0 Then
-;~ 		_ArrayDisplay($queueArray)
+	$sContent = StringReplace($sContent, @CR, "")
+	Local $aLines = StringSplit($sContent, @LF, 1)
+
+	Local $aClean[0]
+	For $i = 1 To $aLines[0]
+		Local $sLine = StringStripWS($aLines[$i], 3)
+		$sLine = StringReplace($sLine, ChrW(65279), "")
+		If $sLine <> "" Then
+			_ArrayAdd($aClean, $sLine)
+		EndIf
+	Next
+
+	$queueArray = $aClean
+
+	Local $iSize = 0
+	If IsArray($queueArray) Then $iSize = UBound($queueArray)
+
+	If $iSize > 0 Then
 		If $guimain Then GUICtrlSetData($BatchBut, t('BATCH_BUT') & " (" & $iSize & ")")
 		EnableBatchMode()
 		Return 1
 	EndIf
 
+	If $guimain Then GUICtrlSetData($BatchBut, t('BATCH_BUT'))
 	Return 0
 EndFunc
 
@@ -4694,13 +4795,26 @@ EndFunc
 Func SaveBatchQueue()
 	Cout("Saving batch queue")
 	Local $hFile = FileOpen($batchQueue, $FO_UNICODE + $FO_CREATEPATH + $FO_OVERWRITE)
-	FileWrite($hFile, _ArrayToString($queueArray, @CRLF))
+	If $hFile = -1 Then Return SetError(1, 0, 0)
+
+	Local $sContent = ""
+	If IsArray($queueArray) Then
+		For $i = 0 To UBound($queueArray) - 1
+			Local $sLine = StringStripWS($queueArray[$i], 3)
+			If $sLine <> "" Then
+				If $sContent <> "" Then $sContent &= @CRLF
+				$sContent &= $sLine
+			EndIf
+		Next
+	EndIf
+
+	FileWrite($hFile, $sContent)
 	FileClose($hFile)
+	Return 1
 EndFunc
 
 ; Returns first element of batch queue
 Func BatchQueuePop()
-;~ 	_ArrayDisplay($queueArray)
 	If Not IsArray($queueArray) Or UBound($queueArray) < 1 Then GetBatchQueue()
 
 	If Not IsArray($queueArray) Or UBound($queueArray) < 1 Then
@@ -4710,12 +4824,25 @@ Func BatchQueuePop()
 		Local $return = _FileRead($logdir & "errorlog.txt", True)
 		If $return <> "" Then MsgBox($iTopmost + 48, $name, t('BATCH_FINISH', $return))
 		If $bOptKeepOpen Then Run(@ScriptFullPath)
-	Else ; Get next command and execute it
-		Local $element = $queueArray[0]
+	Else
+		Local $element = StringStripWS($queueArray[0], 3)
+		$element = StringReplace($element, ChrW(65279), "")
 		_ArrayDelete($queueArray, 0)
 		Cout("Next batch element: " & $element)
 		SaveBatchQueue()
-		Run(@ScriptFullPath & " " & $element)
+
+		If $element = "" Then
+			Cout("Skipping empty batch element")
+			Return BatchQueuePop()
+		EndIf
+
+		Local $aMatch = StringRegExp($element, '^"([^"]+)"', 1)
+		If @error Or UBound($aMatch) < 1 Or Not FileExists($aMatch[0]) Then
+			Cout("Skipping invalid batch element: " & $element)
+			Return BatchQueuePop()
+		EndIf
+
+		Run('"' & @ScriptFullPath & '" ' & $element, @ScriptDir)
 	EndIf
 EndFunc
 
