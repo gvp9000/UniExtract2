@@ -6,7 +6,10 @@ Universal Extractor 2.1.0.0 RC 6
 Binaries:
 																(Success Evaluation|File Listing|Percentage Indicator)
 Name										Files							Version		Features	License					Author								Website
-															
+		
+DiE (Detect-it-easy)						die.exe							3.10		---------	MIT						horsicq								https://github.com/horsicq/DIE-engine/releases
+											diec.exe						-------		---------	-------					-------								-------
+											db (database)					26/03/28	---------	-------					-------								https://github.com/horsicq/Detect-It-Easy/releases
 7Zip										x86\7z.exe						26.00		o	-	-	GNU LGPL 				Igor Pavlov							http://www.7-zip.org/
 											x64\7z.exe						-------		---------	(+ unRAR restriction)	-------								-------															
 											x86\7z.dll						-------		---------	-------					-------								-------															
