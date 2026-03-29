@@ -186,6 +186,7 @@ Global $sFullLog = "", $success = $RESULT_UNKNOWN, $sArcTypeOverride = 0, $sMeth
 Global $innofailed, $arjfailed, $7zfailed, $zipfailed, $iefailed, $isofailed, $tridfailed, $gamefailed, $observerfailed
 Global $unpackfailed, $exefailed, $ttarchfailed
 Global $g_bInnoExtractUsable = False
+Global $g_bSymlinkOnlyWarning = False
 Global $g_sPrimaryDetectRaw = "", $g_sPrimaryDetectMatch = "", $g_sPrimaryDetectScanner = "", $g_bPrimaryStrongHit = False
 Global $oldpath, $oldoutdir, $sUnicodeName, $createdir
 Global $guiprefs, $TBgui = 0, $exStyle = -1, $idTrayStatusExt, $BatchBut, $idProgress, $sComError = 0
@@ -234,7 +235,7 @@ Const $garbro = $bindir & "GARbro\GARbro.Console.exe"
 Const $gcf = $archdir & "GCFScape.exe"
 Const $hlp = "helpdeco.exe"
 Const $innoextract = Quote($bindir & "innoextract.exe", True)
-Const $innounp = "innounp.exe"
+Const $innounp = Quote($bindir & "innounp.exe", True)
 Const $is6cab = "i6comp.exe"
 Const $isxunp = "IsXunpack.exe"
 Const $isz = "unisz.exe"
@@ -2266,26 +2267,13 @@ Func checkInno()
 
 	Cout("Testing Inno Setup")
 	_CreateTrayMessageBox(t('TERM_TESTING') & " Inno Setup " & t('TERM_INSTALLER'))
-
-	Local $sProbe = FetchStdout($innoextract & ' -i "' & $file & '"', $filedir, @SW_HIDE)
-
 	_DeleteTrayMessageBox()
 
-	If StringInStr($sProbe, "Not a supported Inno Setup installer!", 0) Then
-		$innofailed = True
-		checkIE()
-		Return False
-	EndIf
+	; Keep extraction order strict: innounp -> innoextract -> 7z.
+	; Do not probe with innoextract before extraction, as that changes the visible/tool order in logs.
+	$g_bInnoExtractUsable = True
 
-	$g_bInnoExtractUsable = _InnoExtractProbeUsable($sProbe)
-
-	Local $sGogRaw = StringStripWS(FetchStdout($innoextract & ' --gog-game-id --silent "' & $file & '"', $filedir, @SW_HIDE), 3)
-	Local $bGog = False
-	If $sGogRaw <> "" And Not StringInStr($sGogRaw, "No GOG.com game ID found", 0) And Not StringInStr($sGogRaw, "Warning:", 0) And Not StringInStr($sGogRaw, "Done with", 0) And Not StringInStr($sGogRaw, "error", 0) Then
-		$bGog = True
-	EndIf
-
-	Return extract($TYPE_INNO, "Inno Setup " & t('TERM_INSTALLER'), $bGog)
+	Return extract($TYPE_INNO, "Inno Setup " & t('TERM_INSTALLER'), False)
 EndFunc
 
 ; Search for data*.cab file in file directory and extract it if found
@@ -2592,6 +2580,7 @@ EndFunc
 ; Extract known archive formats
 Func extract($arctype, $arcdisp = 0, $additionalParameters = "", $returnSuccess = False, $returnFail = False)
 	$g_bInnoExtractUsable = False
+	$g_bSymlinkOnlyWarning = False
 	$success = $RESULT_UNKNOWN
 
 	Cout("Starting " & $arctype & " extraction")
@@ -3177,54 +3166,92 @@ Func extract($arctype, $arcdisp = 0, $additionalParameters = "", $returnSuccess 
 			EndIf
 
 		Case $TYPE_MSI
-			; Try Lessmsi first
-			$ret = CheckLessmsi()
-			If $ret Then
-				_Run($msi_lessmsi & ' xo "' & $file & '" "' & $outdir & '"', $outdir, @SW_HIDE, True, True, True)
-				MoveFiles($outdir & "\SourceDir", $outdir, False, "", True)
-				If $success == $RESULT_UNKNOWN Then
-					Sleep(300)
-					If DirGetSize($outdir) == $initdirsize Then $success = $RESULT_FAILED
+			; Production MSI pipeline:
+			;   1) lessmsi list validation only
+			;   2) lessmsi real extract
+			;   3) 7-Zip fallback
+			;   4) msiexec administrative extract fallback
+			$success = $RESULT_FAILED
+			Local $sLessmsiList = ""
+
+			If HasNetFramework(4, False) Then
+				Cout("Testing lessmsi")
+				$sLessmsiList = FetchStdout($msi_lessmsi & ' l -t File "' & $file & '"', $outdir)
+				If StringInStr($sLessmsiList, "File,Component_,FileName") Then
+					Cout("MSI pipeline: lessmsi list OK, trying real extract")
+					DirCreate($tempoutdir)
+					Cout("MSI pipeline: executing lessmsi x")
+					RunWait(@ComSpec & ' /d /c ""' & $msi_lessmsi & ' x "' & $file & '" "' & $tempoutdir & '""', $filedir, @SW_HIDE)
+
+					; Normalize lessmsi output if it created SourceDir-style admin folders
+					If FileExists($tempoutdir & '\SourceDir') Then
+						MoveFiles($tempoutdir & '\SourceDir', $tempoutdir, False, "", True)
+						DirRemove($tempoutdir & '\SourceDir', True)
+					ElseIf FileExists($tempoutdir & '\' & $filename & '\SourceDir') Then
+						MoveFiles($tempoutdir & '\' & $filename & '\SourceDir', $tempoutdir, False, "", True)
+						DirRemove($tempoutdir & '\' & $filename, True)
+					EndIf
+
+					If DirGetSize($tempoutdir) > 0 Then
+						MoveFiles($tempoutdir, $outdir, False, "", True)
+						If DirGetSize($outdir) > $initdirsize Then
+							$success = $RESULT_SUCCESS
+							Cout("MSI pipeline: lessmsi extract success (files detected)")
+						Else
+							Cout("MSI pipeline: lessmsi extract produced no usable files in output dir")
+						EndIf
+					Else
+						Cout("MSI pipeline: lessmsi extract produced no files")
+					EndIf
+				Else
+					Cout("MSI pipeline: lessmsi list failed")
+				EndIf
+			Else
+				Cout("MSI pipeline: .NET 4 missing, skipping lessmsi")
+			EndIf
+
+			; Fallback 1: 7-Zip
+			If $success == $RESULT_FAILED Then
+				Cout("MSI pipeline: lessmsi failed, trying 7-Zip fallback")
+				DirCreate($tempoutdir)
+				_Run($7z & ' x "' & $file & '"', $tempoutdir, @SW_HIDE, True, True, True)
+				If $appendext Then AppendExtensions($tempoutdir)
+				MoveFiles($tempoutdir, $outdir, False, "", True)
+				Sleep(300)
+				If DirGetSize($outdir) > $initdirsize Then
+					$success = $RESULT_SUCCESS
+					Cout("MSI pipeline: 7-Zip success (files detected)")
+				Else
+					$success = $RESULT_FAILED
 				EndIf
 			EndIf
 
-			; If lessmsi fails or .NET framework is not available, the user can choose between legacy extractors
-			If Not $ret Or $success == $RESULT_FAILED Then
-				$success = $RESULT_UNKNOWN
-				Local $aReturn = ['MSI ' & t('TERM_INSTALLER'), t('METHOD_EXTRACTION_RADIO', 'jsMSI Unpacker'), t('METHOD_EXTRACTION_RADIO', 'MsiX'), t('METHOD_EXTRACTION_RADIO', 'MSI TC Packer'), t('METHOD_ADMIN_RADIO', 'MSI')]
-				$iChoice = GUI_MethodSelect($aReturn, $arcdisp)
+			; Fallback 2: Administrative install via msiexec
+			If $success == $RESULT_FAILED Then
+				Cout("MSI pipeline: 7-Zip failed, trying msiexec administrative install")
+				RunWait('msiexec.exe /a "' & $file & '" /qn TARGETDIR="' & $outdir & '"', $filedir, @SW_HIDE)
 
-				Switch $iChoice
-					Case 1 ; jsMSI Unpacker
-						Local $sJsmsixOutdir = $outdir
-						If StringRight($sJsmsixOutdir, 1) <> "\" Then $sJsmsixOutdir &= "\"
-						_Run($msi_jsmsix & ' "' & $file & '|' & $sJsmsixOutdir & '"', $filedir, @SW_HIDE, False, False)
-						_FileRead($outdir & "\MSI Unpack.log", True)
-						Cleanup("*.cab")
+				; msiexec /a often extracts into SourceDir or into a nested <filename>\SourceDir tree.
+				; Normalize that output into $outdir so UniExtract sees a usable result.
+				Local $sMsiAdminRoot = $outdir & '\SourceDir'
+				Local $sMsiAdminNested = $outdir & '\' & $filename & '\SourceDir'
+				If FileExists($sMsiAdminRoot) Then
+					Cout("MSI pipeline: normalizing msiexec SourceDir output")
+					MoveFiles($sMsiAdminRoot, $outdir, False, "", True)
+					DirRemove($sMsiAdminRoot, True)
+				ElseIf FileExists($sMsiAdminNested) Then
+					Cout("MSI pipeline: normalizing nested msiexec SourceDir output")
+					MoveFiles($sMsiAdminNested, $outdir, False, "", True)
+					DirRemove($outdir & '\' & $filename, True)
+				EndIf
 
-					Case 2 ; MsiX
-						Local $appendargs = $appendext? '/ext': ''
-						_Run($msi_msix & ' "' & $file & '" /out "' & $outdir & '" ' & $appendargs, $filedir)
-
-					Case 3 ; MSI Total Commander plugin
-						DirCreate($tempoutdir)
-						_Run($quickbms & ' -Y "' & $bindir & $msi_plug & '" "' & $file & '" "' & $tempoutdir & '"', $outdir, @SW_MINIMIZE, True, False)
-
-						; Extract files from extracted CABs
-						Local $aFiles = _FileListToArrayRec($tempoutdir, "*.cab", $FLTAR_FILES, $FLTAR_RECUR, $FLTAR_NOSORT, $FLTAR_FULLPATH)
-						If Not @error Then
-							For $i = 1 To $aFiles[0]
-								_Run($7z & ' x "' & $aFiles[$i] & '"', $outdir)
-								Cleanup($aFiles[$i])
-							Next
-						EndIf
-
-						If $appendext Then AppendExtensions($tempoutdir)
-						MoveFiles($tempoutdir, $outdir, False, "", True)
-
-					Case 4 ; Administrative install
-						RunWait(Warn_Execute('msiexec.exe /a "' & $file & '" /qb TARGETDIR="' & $outdir & '"'), $filedir, @SW_SHOW)
-				EndSwitch
+				Sleep(500)
+				If DirGetSize($outdir) > $initdirsize Then
+					$success = $RESULT_SUCCESS
+					Cout("MSI pipeline: msiexec success (files detected)")
+				Else
+					$success = $RESULT_FAILED
+				EndIf
 			EndIf
 
 		Case $TYPE_MSM ; Test
@@ -3751,7 +3778,7 @@ Func extract($arctype, $arcdisp = 0, $additionalParameters = "", $returnSuccess 
 
 	; -----Success evaluation----- ;
 
-	Cout("Extraction finished, success: " & $success)
+	Cout("Extraction raw result: " & _ResultToText($success) & " (" & $success & ")")
 	If FileExists($tempoutdir) Then DirRemove($tempoutdir)
 	$outdir &= "\"
 
@@ -3768,16 +3795,26 @@ Func extract($arctype, $arcdisp = 0, $additionalParameters = "", $returnSuccess 
 			; Otherwise, check directory size
 			If ($initdirsize > -1 And _DirGetSize($outdir, $initdirsize + 1) <= $initdirsize) Or (FileGetTime($outdir, 0, 1) == $dirmtime) Then
 				If $arctype = "ace" And $fileext = "exe" Then Return False
+				If $g_bSymlinkOnlyWarning Then Cout("Symlink-related warnings were present, but no usable output was created")
 				$success = $RESULT_FAILED
+			ElseIf $g_bSymlinkOnlyWarning Then
+				Cout("Symlink-related warnings were non-fatal; usable output was detected")
 			EndIf
 	EndSwitch
 
 	If $success = $RESULT_FAILED Then
+		Cout("Extraction final result: " & _ResultToText($success) & " (" & $success & ")")
 		If Not $returnFail Then terminate($STATUS_FAILED, $file, $arctype, $arcdisp)
 		$success = $RESULT_UNKNOWN
 		Return 0
 	EndIf
 
+	If $success = $RESULT_UNKNOWN Then
+		Cout("No explicit tool success marker was found, but usable output exists")
+		$success = $RESULT_SUCCESS
+	EndIf
+
+	Cout("Extraction final result: " & _ResultToText($success) & " (" & $success & ")")
 	If Not $returnSuccess Then terminate($STATUS_SUCCESS, $filenamefull, $arctype, $arcdisp)
 	$success = $RESULT_UNKNOWN
 	Return 1
@@ -5177,6 +5214,40 @@ Func SaveLog($status)
 	Return $sName
 EndFunc
 
+Func _ResultToText($iResult)
+	Switch $iResult
+		Case $RESULT_UNKNOWN
+			Return "unknown"
+		Case $RESULT_SUCCESS
+			Return "success"
+		Case $RESULT_FAILED
+			Return "failed"
+		Case $RESULT_CANCELED
+			Return "canceled"
+		Case $RESULT_NOFREESPACE
+			Return "nofreespace"
+	EndSwitch
+
+	Return "result=" & $iResult
+EndFunc
+
+Func _IsSymlinkOnlyArchiveWarning($sLog)
+	Local $bHasSymlinkIssue = StringInStr($sLog, "Cannot create symbolic link", 1) Or _
+			StringInStr($sLog, "Dangerous link path was ignored", 1)
+	If Not $bHasSymlinkIssue Then Return False
+
+	If StringInStr($sLog, "No files to extract", 1) Or StringInStr($sLog, "Wrong password", 1) Or _
+		   StringInStr($sLog, "Missing volume", 1) Or StringInStr($sLog, "Open ERROR: Can not open the file as", 1) Or _
+		   StringInStr($sLog, "Error: System.Exception:", 1) Or StringInStr($sLog, "unknown WISE-version -> contact author", 1) Or _
+		   StringInStr($sLog, "Critical error:", 1) Or StringInStr($sLog, "[ERROR] ", 1) Or _
+		   StringInStr($sLog, "MainHeaderNotFoundError", 1) Or StringInStr($sLog, "*** ERROR:", 1) Or _
+		   StringInStr($sLog, 'Expected section name ".enigma2"') Or StringInStr($sLog, "ERROR: Wrong tag in package", 1) Or _
+		   StringInStr($sLog, "unzip:  cannot find", 1) Or StringInStr($sLog, "err code(", 1) Or _
+		   StringInStr($sLog, "stacktrace", 1) Or StringInStr($sLog, "Write error: ", 1) Then Return False
+
+	Return True
+EndFunc
+
 ; Check for success or failure indicator in log
 Func EvaluateLog($sLog)
 	ParseWarnings($sLog)
@@ -5209,6 +5280,11 @@ Func EvaluateLog($sLog)
 		   StringInStr($sLog, "Successfully extracted to") Or StringInStr($sLog, "[+] Finished!") Then
 		Cout("Success evaluation passed")
 		$success = $RESULT_SUCCESS
+	ElseIf _IsSymlinkOnlyArchiveWarning($sLog) Then
+		Cout("Detected symlink-related archive warnings only; deferring final verdict to output verification")
+		AddWarning("Archive contained symbolic links or unsafe link paths that Windows/7-Zip skipped.")
+		$g_bSymlinkOnlyWarning = True
+		$success = $RESULT_UNKNOWN
 	ElseIf StringInStr($sLog, "err code(", 1) Or StringInStr($sLog, "stacktrace", 1) _
 		   Or StringInStr($sLog, "Write error: ", 1) Or (StringInStr($sLog, "Cannot create", 1) _
 		   And StringInStr($sLog, "No files to extract", 1)) Or StringInStr($sLog, "Archives with Errors: 1") _
@@ -7020,6 +7096,32 @@ Func GUI_Batch_OK()
 	terminate($STATUS_BATCH)
 EndFunc
 
+; Determine whether a file is located below a likely UniExtract output directory
+; Output directories typically reuse the source filename without extension,
+; e.g. "archive.zip" -> ".\\archive\\..." or "setup.exe" -> ".\\setup\\..."
+; When batching a directory recursively, these should not be treated as fresh inputs.
+Func _IsUnderExtractOutputDir($sPath, $sRootDir)
+	Local $sRoot = StringRegExpReplace(_PathFull($sRootDir), "[\\/]+$", "")
+	Local $sCurrent = _PathFull(StringRegExpReplace($sPath, "[\\/][^\\/]+$", ""))
+
+	While StringLen($sCurrent) > StringLen($sRoot) And _StringStartsWith($sCurrent, $sRoot, 0)
+		Local $iPos = StringInStr($sCurrent, "\\", 0, -1)
+		If $iPos < 1 Then ExitLoop
+
+		Local $sParent = StringLeft($sCurrent, $iPos - 1)
+		Local $sDirName = StringTrimLeft($sCurrent, StringLen($sParent) + 1)
+		Local $aSiblingFiles = _FileListToArray($sParent, $sDirName & ".*", $FLTA_FILES)
+		If Not @error Then
+			Cout("Skipping file below existing extract output directory: " & $sPath)
+			Return True
+		EndIf
+
+		$sCurrent = $sParent
+	WEnd
+
+	Return False
+EndFunc
+
 ; Add all files from a directory to batch queue
 Func GUI_Batch_AddDirectory($sDir)
 	Local Static $bRecurse = Number(IniRead($prefs, "UniExtract Preferences", "BatchRecurse", 1))
@@ -7032,18 +7134,25 @@ Func GUI_Batch_AddDirectory($sDir)
 	EndIf
 ;~ 	_ArrayDisplay($aFiles)
 
+	Local $aSnapshot[0]
 	For $j = 1 To $aFiles[0]
+		Local $sCandidate = $aFiles[$j]
+		If _IsUnderExtractOutputDir($sCandidate, $sDir) Then ContinueLoop
+		_ArrayAdd($aSnapshot, $sCandidate)
+	Next
+
+	For $j = 0 To UBound($aSnapshot) - 1
 		If $guimain Then
-			GUI_Drop_Parse($aFiles[$j])
+			GUI_Drop_Parse($aSnapshot[$j])
 			GUI_Batch()
 		Else
-			$file = $aFiles[$j]
+			$file = $aSnapshot[$j]
 			AddToBatch()
 		EndIf
 	Next
 	$eCustomPromptSetting = $PROMPT_ASK
 
-	Return $aFiles[0]
+	Return UBound($aSnapshot)
 EndFunc
 
 ; Display batch queue and allow changes
