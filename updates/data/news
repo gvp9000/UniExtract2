@@ -1,1 +1,14 @@
-v2.7.0 RC7
+2.7.0 RC 7
+Switched main update URLs from Bioruebe server to gvp9000 GitHub Pages
+Updates for the main executable (UniExtract.exe) and the nightly build are functioning correctly from my own repository.
+Updates for the helper components (extractors) are also functioning correctly from my own repository.
+Disabled all visible feedback UI / feedback prompt / feedback sending
+Improved update index parsing to tolerate CRLF and trailing blank lines
+Reworked plugin download links to use explicit per-plugin URLs
+Updated About dialog text, timestamp display, and icon branding
+Reworked FFmpeg updater to use direct GitHub release downloads
+Removed old geturl.php + 7z extraction FFmpeg workflow
+Added direct FFmpeg file existence validation after download
+Fixed download progress text from incorrect kb to bytes
+Added protection against invalid/zero remote file size
+Minor code formatting cleanup
