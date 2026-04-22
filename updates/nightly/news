@@ -1,0 +1,9 @@
+v2.7.1
+Fixed SQLite reporting so the winner is sqlite3 instead of 7z
+Added hard stop after definitive corrupt/broken archive detection
+Stopped redundant fallback loops for corrupt ZIP
+Stopped redundant fallback loops for corrupt RAR
+Stopped redundant fallback loops for broken split 7z
+Prevented extra 7-Zip rechecks after fatal integrity errors
+Skipped SFX/script post-processing when 7-Zip already proved the archive is broken
+About window localization fixed
