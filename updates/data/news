@@ -1,0 +1,8 @@
+v2.8.0
+Fixed SQLite extractor winner reporting
+Improved handling of definitively corrupt archives and broken volumes
+Reduced redundant fallback/retry paths after fatal 7-Zip integrity failures
+Prevented post-processing on archives already proven broken
+Localized the About window
+Added DiE version logging at startup
+Updated version and branding metadata
