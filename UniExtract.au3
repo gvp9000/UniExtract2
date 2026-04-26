@@ -3,8 +3,8 @@
 #AutoIt3Wrapper_Outfile=.\UniExtract.exe
 #AutoIt3Wrapper_Res_Description=Universal Extractor
 #AutoIt3Wrapper_Res_ProductName=Universal Extractor
-#AutoIt3Wrapper_Res_Fileversion=2.8.0.0
-#AutoIt3Wrapper_Res_ProductVersion=2.8.0.0
+#AutoIt3Wrapper_Res_Fileversion=2.8.9
+#AutoIt3Wrapper_Res_ProductVersion=%fileversion%
 #AutoIt3Wrapper_Res_CompanyName=gvp9000
 #AutoIt3Wrapper_Res_Language=1033
 #AutoIt3Wrapper_Res_LegalCopyright=GNU General Public License v2
@@ -70,9 +70,21 @@
 #include "HexDump.au3"
 #include "Pie.au3"
 
+Func _GetUniExtractVersion()
+	If @Compiled Then
+		Local $sCompiledVersion = FileGetVersion(@ScriptFullPath, "FileVersion")
+		If Not @error And $sCompiledVersion <> "" Then Return $sCompiledVersion
+	EndIf
+
+	Local $aVersion = StringRegExp(FileRead(@ScriptFullPath, 4096), "(?im)^\s*#AutoIt3Wrapper_Res_Fileversion\s*=\s*([^\r\n;]+)", 1)
+	If Not @error And UBound($aVersion) > 0 Then Return StringStripWS($aVersion[0], 3)
+
+	Return "0.0.0"
+EndFunc
+
 Const $name = "Universal Extractor"
-Const $sVersion = "2.8.0"
-Const $sVersionId = "2.8.0"
+Const $sVersion = _GetUniExtractVersion()
+Const $sVersionId = $sVersion
 Const $sCodename = "New Start"
 Const $title = $name & " " & $sVersion
 Const $sUrlWebsiteOriginal = "https://www.legroom.net/software/uniextract"
@@ -80,10 +92,10 @@ Const $sUrlWebsite = "https://github.com/gvp9000/UniExtract2"
 Const $sUrlGithub = "https://github.com/gvp9000/UniExtract2"
 Const $sUrlUpdateStable = "https://gvp9000.github.io/UniExtract2/updates/data/"
 Const $sUrlUpdateNightly = "https://gvp9000.github.io/UniExtract2/updates/nightly/"
-Const $sUrlGetUrl = "https://update.bioruebe.com/uniextract/geturl.php?q="
-Const $sUrlFeedback = "https://support.bioruebe.com/uniextract/upload.php"
-Const $sUrlStats = "https://stat.bioruebe.com/uniextract/stats.php?a="
-Const $sUrlPrivacyPolicy = "https://bioruebe.com/dev/uniextract/privacypolicy"
+Const $sUrlGetUrl = "" ; Disabled in this fork
+Const $sUrlFeedback = "" ; Disabled in this fork
+Const $sUrlStats = "" ; Disabled in this fork
+Const $sUrlPrivacyPolicy = "" ; Disabled in this fork
 Const $sUrlCommandLineHelp = "https://github.com/gvp9000/UniExtract2/blob/master/docs/COMMAND-LINE.md"
 Const $bindir = @ScriptDir & "\bin\"
 Const $langdir = @ScriptDir & "\lang\"
@@ -162,7 +174,7 @@ Global $addassoc = ""
 Global $sOptGuid = ""
 Global $bOptAskForFeedback = 1
 Global $bOptCreateLog = 0
-Global $bOptSendStats = 1
+Global $bOptSendStats = 0
 Global $bOptNightlyUpdates = 0
 Global $iCleanup = $OPTION_MOVE
 Global $bOptLockOutputDirectory = 0
@@ -231,7 +243,7 @@ Const $diegui_path = $bindir & "die\die.exe"
 Const $diec = Quote($diec_path, True)
 Const $diegui = Quote($diegui_path, True)
 Const $expand = Quote(@SystemDir & "\expand.exe", True)
-Const $filetool = Quote($bindir & "file.exe", True)
+Const $filetool = Quote($bindir & "file.exe", True) & " -m " & Quote($bindir & "magic.mgc")
 Const $freearc = "unarc.exe"
 Const $fsb = "fsbext.exe"
 Const $garbro = $bindir & "GARbro\GARbro.Console.exe"
@@ -535,6 +547,14 @@ Func IsExe()
 
 	FileScan_Trid()
 	CheckExt()
+	If StringInStr($g_sPrimaryDetectMatch, "WiX Installer") Or StringInStr($g_sPrimaryDetectMatch, "WiX Toolset Installer") Then
+		Cout("Trying WiX/Dark extraction before 7zip because primary detector indicates WiX/Burn")
+		If extract($TYPE_WIX, "WiX " & t('TERM_INSTALLER'), "", True, True) Then
+			LogExtractorWinner("dark")
+			terminate($STATUS_SUCCESS, $filenamefull, $TYPE_WIX, "WiX " & t('TERM_INSTALLER'))
+		EndIf
+		Cout("WiX/Dark extraction failed or produced no usable output; falling back to 7zip probe")
+	EndIf
 	If _ShouldTryAtlantisFallback() Then
 		Cout("Trying Atlantis FILES fallback before 7zip because primary detector indicates Delphi/VCL custom installer")
 		LogDetectionWinner($g_sPrimaryDetectScanner, "Delphi/VCL custom installer candidate (FILES resource)")
@@ -769,38 +789,43 @@ Func ReadPrefs()
 	If IsAdmin() Then Cout("Warning: running as admin")
 
 	; Select ini file
-	Global $settingsdir = @AppDataDir & "\Bioruebe\UniExtract"
-	Local Const $globalIni = @ScriptDir & "\UniExtract.ini"
-	Local Const $userIni = $settingsdir & "\UniExtract.ini"
+	; Fork policy: use the program folder for portable settings, with an AppData fallback when the program folder is not writable.
+	Global $settingsdir = @ScriptDir
+	Local Const $programIni = @ScriptDir & "\UniExtract.ini"
+	Local Const $appDataSettingsDir = @AppDataDir & "\UniExtract"
+	Local Const $appDataIni = $appDataSettingsDir & "\UniExtract.ini"
 
-	If FileExists($userIni) Then
-		Cout("Using current user's settings")
+	If HasWriteAccess($programIni) Then
+		Cout("Using program folder settings")
 	Else
-		; Test file permissions, e.g. when UniExtract is in program files directory,
-		; user settings are stored in %appdata% due to permission issues
-		If CanAccess($globalIni) And HasWriteAccess($globalIni) Then
-			Cout("Using global settings")
-			$settingsdir = @ScriptDir
-		Else
-			Cout("Cannot write to " & $globalIni & ", using %appdata%")
-			FileCopy($globalIni, $userIni, 8)
-		EndIf
+		$settingsdir = $appDataSettingsDir
+		If Not FileExists($settingsdir) Then DirCreate($settingsdir)
+		If FileExists($programIni) And Not FileExists($appDataIni) Then FileCopy($programIni, $appDataIni, 8)
+		Cout("Cannot write to program settings file, using AppData settings: " & $appDataIni)
 	EndIf
 
 	; Setup paths
 	Global $prefs = $settingsdir & "\UniExtract.ini"
 	Global $batchQueue = $settingsdir & "\batch.queue"
-	Global $logdir = $settingsdir & "\log\"
+	Global $logdir = @ScriptDir & "\log\"
+	If Not FileExists($logdir) Then DirCreate($logdir)
+	If Not CanAccess($logdir) Then
+		$logdir = @AppDataDir & "\UniExtract\log\"
+		If Not FileExists($logdir) Then DirCreate($logdir)
+		Cout("Cannot write to program log folder, using AppData log folder: " & $logdir)
+	Else
+		Cout("Using program folder log folder")
+	EndIf
 	Global $userDefDir = $settingsdir & "\def\"
 	Global $aDefDirs[] = [$userDefDir, $defdir]
 	Global $fileScanLogFile = $logdir & "filescan.txt"
 	Global $sPasswordFile = $settingsdir & "\passwords.txt"
 
 	LoadPref("language", $language, False)
-	LoadPref("batchqueue", $batchQueue, False)
-	If $batchQueue Then $batchQueue = _PathFull($batchQueue, $settingsdir)
-	LoadPref("filescanlogfile", $fileScanLogFile, False)
-	If Not @error Then $fileScanLogFile = _PathFull($fileScanLogFile, $settingsdir)
+	; Fork policy: these paths are derived from the active settings/log folders.
+	; Do not load stale absolute paths from old INI files.
+	SavePref("batchqueue", $batchQueue)
+	SavePref("filescanlogfile", $fileScanLogFile)
 	LoadPref("batchenabled", $batchEnabled, 0)
 	LoadPref("history", $history)
 	LoadPref("appendext", $appendext)
@@ -820,7 +845,9 @@ Func ReadPrefs()
 	LoadPref("keepopen", $bOptKeepOpen)
 	LoadPref("feedbackprompt", $bOptAskForFeedback)
 	LoadPref("log", $bOptCreateLog)
-	LoadPref("sendstats", $bOptSendStats)
+	; Usage statistics are disabled in this fork, regardless of old ini values.
+	$bOptSendStats = 0
+	SavePref("sendstats", $bOptSendStats)
 	LoadPref("extract", $extract)
 	LoadPref("unicodecheck", $checkUnicode)
 	LoadPref("extractvideotrack", $bOptExtractVideo)
@@ -1434,6 +1461,9 @@ If StringIsSpace($sFileType) Then
 
 		Case StringInStr($sMatchType, "RoboForm Installer")
 			extract($TYPE_ROBOFORM)
+
+		Case StringInStr($sMatchType, "WiX Installer") Or StringInStr($sMatchType, "WiX Toolset Installer")
+			extract($TYPE_WIX, "WiX " & t('TERM_INSTALLER'))
 
 		Case StringInStr($sMatchType, "Microsoft Windows Installer")
 			extract($TYPE_MSI)
@@ -2548,6 +2578,15 @@ Func TryInstallShieldCabFallback($arcdisp = 0)
 	Return False
 EndFunc
 
+; Detect InstallShield data*.cab sets before the generic Microsoft CAB path
+Func _IsInstallShieldCabCandidate()
+	If $fileext <> "cab" Then Return False
+	If Not StringRegExp($filenamefull, "(?i)^data\d+\.cab$") Then Return False
+	If FileExists($filedir & "\data1.hdr") Then Return True
+	If FileExists($filedir & "\" & $filename & ".hdr") Then Return True
+	Return False
+EndFunc
+
 Func TryIsXUnpackFallback($tempoutdir)
 	If Not HasPlugin($isxunp) Then
 		Cout("IsXunpack fallback not available")
@@ -2597,13 +2636,28 @@ Func TryISxFallback($tempoutdir)
 	For $i = 0 To 1
 		If Not HasPlugin($aCandidates[$i]) Then ContinueLoop
 		Cout("Trying " & $aCandidates[$i] & " fallback")
+		DirRemove($tempoutdir, 1)
 		DirCreate($tempoutdir)
 		RunWait(_MakeCommand($aCandidates[$i], True) & ' "' & $file & '" "' & $tempoutdir & '"', $outdir)
 		If _DirGetSize($tempoutdir) > 0 Then
+			Local $bHasExtBin = _HasInstallShieldExtBin($tempoutdir)
+			Local $bExtBinExtracted = False
+			If $bHasExtBin Then
+				If _HasStrictInstallShieldExtBin($tempoutdir) Then
+					$bExtBinExtracted = TryInstallShieldExtBinStage2($tempoutdir)
+					If Not $bExtBinExtracted Then
+						Cout($aCandidates[$i] & " produced payload-sized InstallShield _ext.bin, but stage-2 extraction failed; continuing fallbacks")
+						DirRemove($tempoutdir, 1)
+						ContinueLoop
+					EndIf
+				Else
+					Cout($aCandidates[$i] & " produced only small/stub InstallShield _ext.bin; accepting ISx stage-1 output")
+				EndIf
+			EndIf
 			MoveFiles($tempoutdir, $outdir, False, "", True, True)
 			If _DirGetSize($outdir, $initdirsize + 1) > $initdirsize Or FileGetTime($outdir, 0, 1) <> $dirmtime Then
 				Cout($aCandidates[$i] & " fallback extracted usable output")
-				LogExtractorWinner($aCandidates[$i])
+				LogExtractorWinner($aCandidates[$i] & ($bExtBinExtracted ? " + 7z" : ""))
 				Return True
 			EndIf
 		EndIf
@@ -2611,6 +2665,66 @@ Func TryISxFallback($tempoutdir)
 
 	Cout("ISx fallback not available or failed")
 	Return False
+EndFunc
+
+Func _HasInstallShieldExtBin($sRootDir)
+	Local $aExtBins = _FileListToArrayRec($sRootDir, "*_ext.bin", $FLTAR_FILES, $FLTAR_RECUR, $FLTAR_NOSORT, $FLTAR_FULLPATH)
+	If @error Or $aExtBins[0] < 1 Then Return False
+	Return True
+EndFunc
+
+Func _HasStrictInstallShieldExtBin($sRootDir)
+	Local Const $iStrictExtBinMinSize = 1048576 ; 1 MiB: treat only payload-sized *_ext.bin as mandatory stage-2 payload
+	Local $aExtBins = _FileListToArrayRec($sRootDir, "*_ext.bin", $FLTAR_FILES, $FLTAR_RECUR, $FLTAR_NOSORT, $FLTAR_FULLPATH)
+	If @error Or $aExtBins[0] < 1 Then Return False
+
+	For $i = 1 To $aExtBins[0]
+		If FileGetSize($aExtBins[$i]) >= $iStrictExtBinMinSize Then Return True
+	Next
+
+	Return False
+EndFunc
+
+Func TryInstallShieldExtBinStage2($sRootDir)
+	Local $aExtBins = _FileListToArrayRec($sRootDir, "*_ext.bin", $FLTAR_FILES, $FLTAR_RECUR, $FLTAR_NOSORT, $FLTAR_FULLPATH)
+	If @error Or $aExtBins[0] < 1 Then Return False
+
+	Local $bExtracted = False
+	For $i = 1 To $aExtBins[0]
+		Local $sExtBin = $aExtBins[$i]
+
+		If _TryInstallShield7zStage2Payload($sRootDir, $sExtBin, "InstallShield _ext.bin") Then
+			$bExtracted = True
+			ContinueLoop
+		EndIf
+
+		Local $sSfx = StringRegExpReplace($sExtBin, "(?i)_ext\.bin$", "_sfx.exe")
+		If FileExists($sSfx) Then
+			Cout("InstallShield _ext.bin was not extractable; trying companion _sfx.exe")
+			If _TryInstallShield7zStage2Payload($sRootDir, $sSfx, "InstallShield companion _sfx.exe") Then $bExtracted = True
+		EndIf
+	Next
+
+	Return $bExtracted
+EndFunc
+
+Func _TryInstallShield7zStage2Payload($sRootDir, $sPayload, $sLabel)
+	Local $sPayloadDir = StringLeft($sPayload, StringInStr($sPayload, "\", 0, -1))
+	Local $iBefore = _DirGetSize($sRootDir, 0)
+	Local $iSavedSuccess = $success
+
+	Cout("Trying 7z stage-2 extraction of " & $sLabel & ": " & $sPayload)
+	_Run($7z & ' x -aou -y -o"' & $sPayloadDir & '" "' & $sPayload & '"', $sPayloadDir, @SW_HIDE, True, True, True, False)
+
+	Local $bOk = ($success = $RESULT_SUCCESS And _DirGetSize($sRootDir, 0) > $iBefore)
+	If $bOk Then
+		Cout($sLabel & " stage-2 extraction succeeded")
+	Else
+		Cout($sLabel & " stage-2 extraction failed or produced no new output")
+	EndIf
+
+	$success = $iSavedSuccess
+	Return $bOk
 EndFunc
 
 Func TryInstallShieldBFallback($tempoutdir)
@@ -3006,6 +3120,8 @@ Func ResolveStrictPipeline()
 			checkInno()
 		ElseIf StringInStr($sSaved, "Nullsoft") Then
 			checkNSIS()
+		ElseIf StringInStr($sSaved, "WiX Installer") Or StringInStr($sSaved, "WiX Toolset Installer") Then
+			extract($TYPE_WIX, "WiX " & t('TERM_INSTALLER'))
 		ElseIf StringInStr($sSaved, "Microsoft Windows Installer") Or StringInStr($sSaved, "MSI Installer") Then
 			extract($TYPE_MSI, 'Windows Installer (MSI) ' & t('TERM_PACKAGE'))
 		ElseIf StringInStr($sSaved, "InstallScript Setup Launcher") Then
@@ -3467,7 +3583,11 @@ Func extract($arctype, $arcdisp = 0, $additionalParameters = "", $returnSuccess 
 			FileDelete($ret)
 
 		Case $TYPE_CAB
-			If StringInStr($sFileType, 'Type 1', 0) Then
+			; Some InstallShield data*.cab files are misdetected as Microsoft CAB.
+			; If a matching data*.cab/data*.hdr set is present, try unshield first.
+			If _IsInstallShieldCabCandidate() And TryInstallShieldCabFallback($arcdisp) Then
+				$success = $RESULT_SUCCESS
+			ElseIf StringInStr($sFileType, 'Type 1', 0) Then
 				RunWait(Warn_Execute(Quote($file) & ' /q /x:' & Quote($outdir)), $outdir)
 			Else
 				check7z($arcdisp)
@@ -4169,28 +4289,30 @@ Func extract($arctype, $arcdisp = 0, $additionalParameters = "", $returnSuccess 
 				$success = $RESULT_FAILED
 			EndIf
 
-		Case $TYPE_THINSTALL ; Test
-			HasPlugin($thinstall)
-
-			$pid = Run(Warn_Execute(Quote($file)), $filedir)
-			Do
-				Sleep(100)
-			Until ProcessExists($pid)
-			Sleep(1000)
-			Run($thinstall)
-			WinWait("h4sh3m Virtual Apps Dependency Extractor")
-			WinActivate("h4sh3m Virtual Apps Dependency Extractor")
-			ControlSetText("h4sh3m Virtual Apps Dependency Extractor", "", "TEdit1", $pid)
-			ControlClick("h4sh3m Virtual Apps Dependency Extractor", "", "TBitBtn3")
-			WinWait("h4sh3m Virtual App's Extractor", "", 60)
-			WinActivate("h4sh3m Virtual App's Extractor")
-			ControlSetText("h4sh3m Virtual App's Extractor", "", "TEdit1", $outdir)
-			ControlClick("h4sh3m Virtual App's Extractor", "", "TBitBtn1")
-			WinWait("Done")
-			ControlClick("Done", "", "Button1")
-			WinClose("h4sh3m Virtual Apps Dependency Extractor")
-			Sleep(1000)
-			ProcessClose($pid)
+		Case $TYPE_THINSTALL ; h4sh3m plugin disabled in this fork
+			Cout("Thinstall/ThinApp extraction skipped: h4sh3m plugin disabled in this fork")
+			$success = $RESULT_FAILED
+;~			HasPlugin($thinstall)
+;~
+;~			$pid = Run(Warn_Execute(Quote($file)), $filedir)
+;~			Do
+;~				Sleep(100)
+;~			Until ProcessExists($pid)
+;~			Sleep(1000)
+;~			Run($thinstall)
+;~			WinWait("h4sh3m Virtual Apps Dependency Extractor")
+;~			WinActivate("h4sh3m Virtual Apps Dependency Extractor")
+;~			ControlSetText("h4sh3m Virtual Apps Dependency Extractor", "", "TEdit1", $pid)
+;~			ControlClick("h4sh3m Virtual Apps Dependency Extractor", "", "TBitBtn3")
+;~			WinWait("h4sh3m Virtual App's Extractor", "", 60)
+;~			WinActivate("h4sh3m Virtual App's Extractor")
+;~			ControlSetText("h4sh3m Virtual App's Extractor", "", "TEdit1", $outdir)
+;~			ControlClick("h4sh3m Virtual App's Extractor", "", "TBitBtn1")
+;~			WinWait("Done")
+;~			ControlClick("Done", "", "Button1")
+;~			WinClose("h4sh3m Virtual Apps Dependency Extractor")
+;~			Sleep(1000)
+;~			ProcessClose($pid)
 
 		Case $TYPE_TTARCH
 			If $ttarchfailed Then Return 0
@@ -4436,8 +4558,13 @@ Func extract($arctype, $arcdisp = 0, $additionalParameters = "", $returnSuccess 
 			EndIf
 
 		Case $TYPE_WIX
-			HasNetFramework(4)
-			_Run($wix & ' -x "' & $outdir & '" "' & $file & '"', $outdir, @SW_MINIMIZE, True, True, False)
+			If Not HasNetFramework(4, Not $returnFail) Then
+				$success = $RESULT_FAILED
+			ElseIf Not HasPlugin($wix, $returnFail) Then
+				$success = $RESULT_FAILED
+			Else
+				_Run($wix & ' -x "' & $outdir & '" "' & $file & '"', $outdir, @SW_MINIMIZE, True, True, False)
+			EndIf
 
 		Case $TYPE_WOLF
 			HasPlugin($wolf)
@@ -5330,7 +5457,9 @@ Func LogPerFileSummary($sFinalStatus, $sArcDisp = "")
 		Local $sTypeNorm = StringLower(_NormalizeOneLine($Type))
 		Local $sDetectNorm = StringLower(_NormalizeOneLine($sDetect))
 
-		If StringInStr($sDisp, "inno") Then
+		If StringInStr($sDisp, "wix") Then
+			$sExtractor = "dark"
+		ElseIf StringInStr($sDisp, "inno") Then
 			$sExtractor = "innounp/innoextract"
 		ElseIf StringInStr($sDisp, "msi") Then
 			$sExtractor = "lessmsi/7z/msiexec"
@@ -5899,6 +6028,7 @@ Func BatchQueuePop()
 		EndIf
 
 		$element = $sLine
+		_ArrayDelete($aClean, $i) ; Pop before Run() to avoid a fast child processing the same queue item again
 		ExitLoop
 	WEnd
 
@@ -5946,22 +6076,20 @@ Func BatchQueuePop()
 	Local $iPid = Run('"' & @ScriptFullPath & '" ' & $element, @ScriptDir)
 	If $iPid = 0 Then
 		Cout("Failed to start next batch element: " & $element)
+
+		; Put the element back only if Run() itself failed, so no batch item is silently dropped.
+		Local $hRetryLock = _BatchQueue_Lock()
+		If $hRetryLock <> 0 Then
+			Local $aRetryQueue = _BatchQueue_ReadArray_NoLock()
+			_ArrayInsert($aRetryQueue, 0, $element)
+			If Not _BatchQueue_WriteArray_NoLock($aRetryQueue) Then Cout("Failed to restore batch element after Run() failure: " & $element)
+			_BatchQueue_Unlock($hRetryLock)
+		Else
+			Cout("Failed to relock batch queue to restore failed batch element: " & $element)
+		EndIf
+
 		Return
 	EndIf
-
-	$hLock = _BatchQueue_Lock()
-	If $hLock = 0 Then
-		Cout("Failed to relock batch queue after starting next element")
-		Return
-	EndIf
-
-	If Not _BatchQueue_RemoveFirstExact_NoLock($element) Then
-		Cout("Failed to remove started batch element from queue: " & $element)
-	Else
-		$queueArray = _BatchQueue_ReadArray_NoLock()
-	EndIf
-
-	_BatchQueue_Unlock($hLock)
 EndFunc
 
 ; Enable batch mode
@@ -6422,9 +6550,21 @@ Func EvaluateLog($sLog)
 		Cout("Fatal archive integrity errors detected")
 		$g_bArchiveIntegrityError = True
 	EndIf
-	If StringInStr($sLog, "Wrong password?") Or StringInStr($sLog, "The specified password is incorrect.") Or _
+
+	; Interactive extractors can log a wrong password first, then succeed after the user re-enters
+	; the correct password.  In that case keep the final successful result instead of treating the
+	; earlier failed attempt as fatal.
+	Local $bHasSuccessIndicator = StringInStr($sLog, "Everything is Ok") Or _
+			StringInStr($sLog, "0 failed") Or StringInStr($sLog, "All files OK") Or _
+			StringInStr($sLog, "All OK") Or StringInStr($sLog, "done.") Or _
+			StringInStr($sLog, "Done ...") Or StringInStr($sLog, ": done") Or _
+			StringInStr($sLog, "Result:	Successful, errorcode 0") Or StringInStr($sLog, "... Successful") Or _
+			StringInStr($sLog, "Extract files [ ") Or StringInStr($sLog, "Done; file is OK") Or _
+			StringInStr($sLog, "Successfully extracted to") Or StringInStr($sLog, "[+] Finished!")
+
+	If Not $bHasSuccessIndicator And (StringInStr($sLog, "Wrong password?") Or StringInStr($sLog, "The specified password is incorrect.") Or _
 	   StringInStr($sLog, "Archive encrypted.") Or StringInStr($sLog, "Corrupt file or wrong password") Or _
-	   StringInStr($sLog, "ERROR: Wrong password") Or StringInStr(_StringGetLine($sLog, -1), "Enter password") Then
+	   StringInStr($sLog, "ERROR: Wrong password") Or StringInStr(_StringGetLine($sLog, -1), "Enter password")) Then
 		Cout("Invalid password")
 		$success = $RESULT_FAILED
 		SetError(1, 1)
@@ -6443,13 +6583,7 @@ Func EvaluateLog($sLog)
 	ElseIf $bHasFatalArchiveIntegrityError Then
 		$success = $RESULT_FAILED
 		SetError(1)
-	ElseIf StringInStr($sLog, "Everything is Ok") Or _
-		   StringInStr($sLog, "0 failed") Or StringInStr($sLog, "All files OK") Or _
-		   StringInStr($sLog, "All OK") Or StringInStr($sLog, "done.") Or _
-		   StringInStr($sLog, "Done ...") Or StringInStr($sLog, ": done") Or _
-		   StringInStr($sLog, "Result:	Successful, errorcode 0") Or StringInStr($sLog, "... Successful") Or _
-		   StringInStr($sLog, "Extract files [ ") Or StringInStr($sLog, "Done; file is OK") Or _
-		   StringInStr($sLog, "Successfully extracted to") Or StringInStr($sLog, "[+] Finished!") Then
+	ElseIf $bHasSuccessIndicator Then
 		Cout("Success evaluation passed")
 		$success = $RESULT_SUCCESS
 	ElseIf _IsSymlinkOnlyArchiveWarning($sLog) Then
@@ -6503,7 +6637,10 @@ Func _FindArchivePassword($sIsProtectedCmd, $sTestCmd, $sIsProtectedText = "encr
 
 	Cout("Archive is password protected")
 	_SetTrayMessageBoxText(t('SEARCHING_PASSWORD'))
-	Local $bUnattended = ($silentmode Or $batchEnabled)
+	; Only true silent/batch-queue runs are unattended.
+	; The batch-enabled preference can also be active during a normal context-menu extraction,
+	; so do not use $batchEnabled here or encrypted archives fail before the extractor can ask for input.
+	Local $bUnattended = $silentmode
 	Local $aPasswords = FileReadToArray($sPasswordFile)
 	If @error Then
 		Cout("Error reading password file " & $sPasswordFile)
@@ -6596,7 +6733,7 @@ Func _Run($f, $sWorkingDir = $outdir, $show_flag = @SW_MINIMIZE, $bUseCmd = True
 				Or StringInStr($return, "you must choose a new filename") Or StringInStr($return, "Insert disk with") _
 				Or StringInStr($return, "[R]etry") Then
 					Cout("User input needed")
-					WinSetState($run, "", @SW_SHOW)
+					WinSetState($runtitle, "", @SW_SHOW)
 					GUICtrlSetFont($idTrayStatusExt, 8.5, 900)
 					_SetTrayMessageBoxText(t('INPUT_NEEDED'))
 					WinActivate($runtitle)
@@ -7045,9 +7182,7 @@ EndFunc
 
 ; Send usage statistics if enabled in options
 Func SendStats($a, $sResult = 1)
-	If Not $bOptSendStats Then Return
-
-	InetRead(Cout($sUrlStats & $a & "&r=" & $sResult & "&id=" & $sOptGuid & "&v=" & $sVersion), 1)
+	Return ; Usage statistics disabled in this fork
 EndFunc
 
 ; Check for new version
@@ -7510,6 +7645,9 @@ Func CreateGUI()
 	Global $iGuiMainWidth = 344, $iGuiMainHeight = 136
 	Local Const $iLeft = 12, $iTop = 10, $iInputWidth = 290
 	Local $iPosY = $iTop - 1
+	Local $bArabicLayout = ($language = "Arabic" Or $language = "Farsi" Or $language = "Hebrew")
+	Local $iMainLabelWidth = $bArabicLayout? 145: -1
+	Local $iMainLabelStyle = $bArabicLayout? $SS_RIGHT: -1
 
 	Cout("Creating main GUI")
 	GUIRegisterMsg($WM_DROPFILES, "WM_DROPFILES_UNICODE_FUNC")
@@ -7517,7 +7655,9 @@ Func CreateGUI()
 
 	Switch $language
 		Case "Arabic", "Farsi", "Hebrew"
-			$exStyle = $WS_EX_LAYOUTRTL
+			; WS_EX_LAYOUTRTL mirrors the whole coordinate system and breaks the main/preferences UI.
+			; Keep a normal window layout for now so Arabic text stays usable.
+			$exStyle = -1
 		Case Else
 			$exStyle = -1
 	EndSwitch
@@ -7569,7 +7709,7 @@ Func CreateGUI()
 	GUI_UpdateLogItem()
 
 	; File controls
-	Local $filelabel = GUICtrlCreateLabel(t('MAIN_FILE_LABEL'), $iLeft, $iTop, $exStyle == $WS_EX_LAYOUTRTL? 50: -1, 15)
+	Local $filelabel = GUICtrlCreateLabel(t('MAIN_FILE_LABEL'), $iLeft, $iTop, $iMainLabelWidth, 15, $iMainLabelStyle)
 	Global $GUI_Main_Extract = GUICtrlCreateRadio(t('TERM_EXTRACT'), GetPos($guimain, $filelabel, 5), $iPosY, Default, 15)
 	Global $GUI_Main_Scan = GUICtrlCreateRadio(t('TERM_SCAN'), GetPos($guimain, $GUI_Main_Extract, 10), $iPosY, 100, 15)
 	GUICtrlSetState($extract? $GUI_Main_Extract: $GUI_Main_Scan, $GUI_CHECKED)
@@ -7580,7 +7720,7 @@ Func CreateGUI()
 
 	; Directory controls
 	$iPosY = GetPos($guimain, $filecont, 10, False)
-	Global $GUI_Main_Destination_Label = GUICtrlCreateLabel(t('MAIN_DEST_DIR_LABEL'), $iLeft, $iPosY, $exStyle == $WS_EX_LAYOUTRTL? 50: -1, 15)
+	Global $GUI_Main_Destination_Label = GUICtrlCreateLabel(t('MAIN_DEST_DIR_LABEL'), $iLeft, $iPosY, $iMainLabelWidth, 15, $iMainLabelStyle)
 	Global $GUI_Main_Lock = GUICtrlCreateCheckbox(t('MAIN_DIRECTORY_LOCK'), GetPos($guimain, $GUI_Main_Destination_Label, 5), $iPosY - 1, Default, 15)
 	GUICtrlSetTip($GUI_Main_Lock, t('MAIN_DIRECTORY_LOCK_TOOLTIP'))
 
@@ -8074,6 +8214,10 @@ EndFunc
 ; Build and display preferences GUI
 Func GUI_Prefs()
 	Local $iPosX, $iPosY, $iControlWidth, $iWidth = 466, $iHeight = 350
+	Local $bArabicLayout = ($language = "Arabic" Or $language = "Farsi" Or $language = "Hebrew")
+	Local $iPrefsTopLabelStyle = $bArabicLayout? $SS_RIGHT: -1
+	Local $iLangLabelWidth = $bArabicLayout? 82: 72
+	Local $iUpdateLabelWidth = $bArabicLayout? 132: 128
 	Cout("Creating preferences GUI")
 
 	; Create GUI
@@ -8082,8 +8226,8 @@ Func GUI_Prefs()
 
 	; General options
 	Local $idGroup = GUICtrlCreateGroup(t('PREFS_UNIEXTRACT_OPTS_LABEL'), 8, 6, 260, 98)
-	GUICtrlCreateLabel(t('PREFS_LANG_LABEL'), 14, 36, 72, 15)
-	GUICtrlCreateLabel(t('PREFS_UPDATEINTERVAL_LABEL'), 14, 72, 128, 15)
+	GUICtrlCreateLabel(t('PREFS_LANG_LABEL'), 14, 36, $iLangLabelWidth, 15, $iPrefsTopLabelStyle)
+	GUICtrlCreateLabel(t('PREFS_UPDATEINTERVAL_LABEL'), 14, 72, $iUpdateLabelWidth, 15, $iPrefsTopLabelStyle)
 	Global $langselect = GUICtrlCreateCombo("", 100, 32, 160, 25, BitOR($CBS_DROPDOWNLIST, $WS_VSCROLL))
 	Global $IntervalCont = GUICtrlCreateCombo("", 140, 68, 120, 21, BitOR($CBS_DROPDOWNLIST, $WS_VSCROLL))
 	Local $aUpdateInterval = [t('PREFS_UPDATE_DAILY'), t('PREFS_UPDATE_WEEKLY'), t('PREFS_UPDATE_MONTHLY'), t('PREFS_UPDATE_YEARLY'), t('PREFS_UPDATE_NEVER'), t('PREFS_UPDATE_CUSTOM', $iOptUpdateInterval)]
@@ -8121,7 +8265,7 @@ Func GUI_Prefs()
 	Global $appendextopt = _GUICtrlCreateCheckbox('PREFS_APPEND_EXT_LABEL', $appendext, $iPosX, $iPosY, $iControlWidth)
 	Global $idOptCreateLog = _GUICtrlCreateCheckbox('PREFS_LOG_LABEL', $bOptCreateLog, $iPosX, $iPosY, $iControlWidth)
 	; Global $idOptFeedbackPrompt = _GUICtrlCreateCheckbox('PREFS_FEEDBACK_PROMPT_LABEL', $bOptAskForFeedback == 1, $iPosX, $iPosY, $iControlWidth, 20, $BS_AUTO3STATE) ; Feedback UI disabled in this fork
-	Global $idOptSendStats = _GUICtrlCreateCheckbox('PREFS_SEND_STATS_LABEL', $bOptSendStats, $iPosX, $iPosY, $iControlWidth)
+	; Send anonymous usage statistics preference hidden in this fork
 	Global $idOptBetaUpdates = _GUICtrlCreateCheckbox('PREFS_BETA_UPDATES_LABEL', $bOptNightlyUpdates, $iPosX, $iPosY, $iControlWidth)
 	GUICtrlCreateGroup("", -99, -99, 1, 1)
 
@@ -8137,7 +8281,6 @@ Func GUI_Prefs()
 	GUICtrlSetTip($appendextopt, t('PREFS_APPEND_EXT_TOOLTIP'))
 	GUICtrlSetTip($idOptGameMode, t('PREFS_HIDE_STATUS_FULLSCREEN_TOOLTIP'))
 	; GUICtrlSetTip($idOptFeedbackPrompt, t('PREFS_FEEDBACK_PROMPT_TOOLTIP')) ; Feedback UI disabled in this fork
-	GUICtrlSetTip($idOptSendStats, t('PREFS_SEND_STATS_TOOLTIP'))
 	GUICtrlSetTip($idOptExtractVideo, t('PREFS_VIDEOTRACK_TOOLTIP'))
 	GUICtrlSetTip($idOptDeleteSourceFile[$OPTION_ASK], t('PREFS_SOURCE_FILES_OPT_KEEP_TOOLTIP'))
 	GUICtrlSetTip($idOptDeleteAdditionalFiles, t('PREFS_DELETE_ADDITIONAL_FILES_TOOLTIP', t('DIR_ADDITIONAL_FILES')))
@@ -8228,12 +8371,8 @@ Func GUI_Prefs_OK()
 	$bOptRememberGuiSizePosition = Number(_IsChecked($idOptRememberGuiSizePosition))
 	$iCleanup = _IsChecked($idOptDeleteAdditionalFiles)? $OPTION_DELETE: $OPTION_MOVE
 
-	$tmp = Number(_IsChecked($idOptSendStats))
-	If $bOptSendStats <> $tmp Then
-		If Not $tmp Then SendStats("DisableStats")
-		$bOptSendStats = $tmp
-		If $bOptSendStats Then SendStats("EnableStats")
-	EndIf
+	; Send anonymous usage statistics preference hidden/disabled in this fork
+	$bOptSendStats = 0
 
 	$tmp = Number(_IsChecked($idOptBetaUpdates))
 	Local $bUpdate = Not ($bOptNightlyUpdates == $tmp)
@@ -9522,10 +9661,10 @@ Func GUI_Plugins($hParent = 0, $sSelection = 0)
 	EndIf
 
 	; Define plugins
+	; h4sh3m Virtual Apps Dependency Extractor disabled in this fork; not included in plugin array.
 	; executable|name|description|filetypes|filemask|extractionfilter|outdir|newfilename|password
-	Local $aPluginInfo[12][9] = [ _
+	Local $aPluginInfo[11][9] = [ _
 		[$arc_conv, 'arc_conv', t('PLUGIN_ARC_CONV'), 'nsa, wolf, xp3, ypf', 'arc_convert.zip', 'arc_conv.exe', '', '', 0], _
-		[$thinstall, 'h4sh3m Virtual Apps Dependency Extractor', t('PLUGIN_THINSTALL'), 'exe (Thinstall)', 'Extractor.rar', '', '', '', 'h4sh3m'], _
 		[$iscab, 'iscab', t('PLUGIN_ISCAB'), 'cab', 'iscab.exe;ISTools.dll', '', '', '', 0], _
 		[$unreal, 'Unreal Engine Resource Viewer', t('PLUGIN_UNREAL'), 'pak, u, uax, upk', 'umodel_win32.zip', 'umodel.exe|SDL2.dll', '', '', 0], _
 		[$dcp, 'WinterMute Engine Unpacker', t('PLUGIN_WINTERMUTE'), 'dcp', $dcp, '', '', '', 0], _
@@ -9603,8 +9742,8 @@ Func _GetPluginDownloadUrl($sPluginName)
 	Switch $sPluginName
 		Case 'arc_conv'
 			Return "https://sourceforge.net/projects/archivconvert/files/archivconvert/version_0.81/arc_convert.zip/download"
-		Case 'h4sh3m Virtual Apps Dependency Extractor'
-			Return "https://github.com/Bioruebe/UniExtract2/issues/75"
+;~		Case 'h4sh3m Virtual Apps Dependency Extractor' ; Disabled in this fork
+;~			Return $sUrlGithub & "/issues?q=h4sh3m"
 		Case 'iscab'
 			Return "https://code.google.com/archive/p/uniextract/source/default/source"
 		Case 'Unreal Engine Resource Viewer'
