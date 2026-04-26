@@ -25,12 +25,12 @@
 ; Universal Extractor v2.0.0
 ; Author:	Jared Breland <jbreland@legroom.net>, Version 2.0.0 by Bioruebe
 ; Homepage:	http://www.legroom.net/mysoft
-; Language:	AutoIt v3.3.14.2
+; Language:	AutoIt v3.3.18.0
 ; License:	GNU General Public License v2 (http://www.gnu.org/copyleft/gpl.html)
 ;
 ; Very Basic Script Function:
 ;	Use Unix File Tool and TrID to determine filetype
-;	Use Exeinfo PE and PEiD to identify executable filetypes
+;	Use DiE, Exeinfo PE and PEiD to identify executable filetypes
 ;	Extract known archive types
 ;
 ; ----------------------------------------------------------------------------
