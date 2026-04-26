@@ -1,3 +1,33 @@
+v2.8.9
+Updated DiE database to 20260426.
+Updated TrIDDefs.TRD to 20260423.
+Updated lconvert.exe to 5.15.18 (x86).
+Updated file.exe and magic.mgc to v5.46 (built from source).
+Updated unshield.exe to v1.6.2 (built from source).
+Updated zlib1.dll to v1.3.2 (built from source).
+Updated pdfdetach.exe, pdftohtml.exe, pdftopng.exe, and pdftotext.exe to v4.06.
+Updated dark.exe to v3.14.8722.
+Updated /x86/UnRAR.exe to v7.1.0.
+Added lsar.exe listing tool from the unar package.
+Updated Ukrainian language file, thanks to StanleyKid-22.
+
+Redirected project/update URLs to the gvp9000 GitHub / GitHub Pages fork.
+Disabled Bioruebe feedback, statistics, privacy, and get-url endpoints.
+Disabled anonymous usage statistics completely and removed the preference checkbox.
+Changed settings behavior to prefer the program folder, with fallback to %AppData%\UniExtract.
+Changed logs to prefer program folder\log\, with %AppData%\UniExtract\log\ fallback if not writable.
+Fixed stale INI path reuse for batchqueue and filescanlogfile.
+Updated file.exe usage to explicitly load magic.mgc.
+Added WiX/Burn detection and prioritized Dark/WiX extraction before 7z fallback.
+Improved InstallShield handling:
+    - detects data*.cab + .hdr sets before generic CAB handling,
+    - improves ISx fallback cleanup,
+    - tries stage-2 extraction of payload-sized *_ext.bin with 7z.
+Fixed batch queue race risk by removing the queue item before launching the next item.
+Fixed wrong-password-then-correct-password case so final success is not treated as failure.
+Disabled the old h4sh3m/Thinstall plugin path and removed it from plugin listing.
+Improved Arabic/Farsi/Hebrew UI layout handling without mirroring the whole GUI.
+
 v2.8.0
 Update die to 3.21
 Update die definitions to 2026-04-22
