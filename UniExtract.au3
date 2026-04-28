@@ -3,7 +3,7 @@
 #AutoIt3Wrapper_Outfile=.\UniExtract.exe
 #AutoIt3Wrapper_Res_Description=Universal Extractor
 #AutoIt3Wrapper_Res_ProductName=Universal Extractor
-#AutoIt3Wrapper_Res_Fileversion=2.8.9
+#AutoIt3Wrapper_Res_Fileversion=2.9.3
 #AutoIt3Wrapper_Res_ProductVersion=%fileversion%
 #AutoIt3Wrapper_Res_CompanyName=gvp9000
 #AutoIt3Wrapper_Res_Language=1033
@@ -25,12 +25,12 @@
 ; Universal Extractor v2.0.0
 ; Author:	Jared Breland <jbreland@legroom.net>, Version 2.0.0 by Bioruebe
 ; Homepage:	http://www.legroom.net/mysoft
-; Language:	AutoIt v3.3.18.0
+; Language:	AutoIt v3.3.14.2
 ; License:	GNU General Public License v2 (http://www.gnu.org/copyleft/gpl.html)
 ;
 ; Very Basic Script Function:
 ;	Use Unix File Tool and TrID to determine filetype
-;	Use DiE, Exeinfo PE and PEiD to identify executable filetypes
+;	Use Exeinfo PE and PEiD to identify executable filetypes
 ;	Extract known archive types
 ;
 ; ----------------------------------------------------------------------------
@@ -194,7 +194,7 @@ Global $hMutex, $hProgress, $hTridDll = 0
 Global $prompt, $prefs, $sUpdateURL = $sUrlUpdateStable, $eCustomPromptSetting = $PROMPT_ASK
 Global $Type, $silent, $iUnicodeMode = $UNICODE_NONE, $reg64 = "", $iOsArch = 32
 Global $logdir, $archdir, $settingsdir, $userDefDir, $batchQueue, $fileScanLogFile, $sPasswordFile, $aDefDirs[0]
-Global $sFullLog = "", $success = $RESULT_UNKNOWN, $sArcTypeOverride = 0, $sMethodSelectOverride = 0
+Global $sFullLog = "", $success = $RESULT_UNKNOWN, $sArcTypeOverride = 0, $sMethodSelectOverride = 0, $g_bPasswordFailureAbort = False
 Global $innofailed, $arjfailed, $7zfailed, $zipfailed, $iefailed, $isofailed, $tridfailed, $gamefailed, $observerfailed
 Global $unpackfailed, $exefailed, $ttarchfailed
 Global $g_bInnoExtractUsable = False
@@ -417,6 +417,21 @@ Func StartExtraction()
 	EndIf
 
 	FilenameParse($file)
+
+	; Context-menu/command-line batch can start any selected file as the first active process.
+	; Queue-level multipart guards do not run for that first/current process, so skip
+	; downstream split volumes here before output directory setup, history, detection,
+	; extraction, or per-file result logging.  Do not limit this to /sub: Extract Here
+	; and /last can hit the same first-process bypass.
+	If $extract And $cmdline[0] > 1 And $outdir <> "" Then
+		Local $sPreferredVolume = ""
+		If __IsLaterMultipartVolumeWithPreferredSibling($file, $sPreferredVolume) Then
+			Cout("Skipping later multipart direct batch file " & PathGetFileName($file) & "; preferred volume exists: " & PathGetFileName($sPreferredVolume))
+			EnableBatchMode()
+			terminate($STATUS_BATCH)
+		EndIf
+	EndIf
+
 	ValidateOutputDirectory()
 
 	; Collect file information (for log/feedback only)
@@ -646,12 +661,97 @@ Func EnvParse($sString)
 	Return $sString
 EndFunc
 
+; Read language INI files as Unicode text instead of using Windows IniRead().
+; This allows shipped translations to be UTF-8/UTF-8-BOM while keeping old
+; UTF-16 LE BOM language files compatible. Preferences still use IniRead().
+Func _LangFileRead($sPath)
+	Static $aCachePath[1] = [0]
+	Static $aCacheText[1] = [0]
+
+	For $i = 1 To $aCachePath[0]
+		If $aCachePath[$i] = $sPath Then Return $aCacheText[$i]
+	Next
+
+	Local $hFile = FileOpen($sPath, $FO_BINARY)
+	If $hFile = -1 Then Return SetError(1, 0, "")
+
+	Local $bData = FileRead($hFile)
+	FileClose($hFile)
+
+	Local $sText = ""
+	Switch True
+		Case BinaryLen($bData) >= 3 And BinaryMid($bData, 1, 3) = Binary("0xEFBBBF")
+			$sText = BinaryToString(BinaryMid($bData, 4), $SB_UTF8)
+		Case BinaryLen($bData) >= 2 And BinaryMid($bData, 1, 2) = Binary("0xFFFE")
+			$sText = BinaryToString(BinaryMid($bData, 3), $SB_UTF16LE)
+		Case BinaryLen($bData) >= 2 And BinaryMid($bData, 1, 2) = Binary("0xFEFF")
+			$sText = BinaryToString(BinaryMid($bData, 3), $SB_UTF16BE)
+		Case BinaryLen($bData) >= 4 And BinaryMid($bData, 2, 1) = Binary("0x00") And BinaryMid($bData, 4, 1) = Binary("0x00")
+			$sText = BinaryToString($bData, $SB_UTF16LE)
+		Case Else
+			$sText = BinaryToString($bData, $SB_UTF8)
+	EndSwitch
+
+	$aCachePath[0] += 1
+	ReDim $aCachePath[$aCachePath[0] + 1]
+	ReDim $aCacheText[$aCachePath[0] + 1]
+	$aCachePath[$aCachePath[0]] = $sPath
+	$aCacheText[$aCachePath[0]] = $sText
+
+	Return $sText
+EndFunc
+
+Func _LangIniRead($sPath, $sSection, $sKey, $sDefault = "")
+	Local $sContent = _LangFileRead($sPath)
+	If @error Then Return $sDefault
+
+	$sContent = StringReplace($sContent, @CRLF, @LF)
+	$sContent = StringReplace($sContent, @CR, @LF)
+	Local $aLines = StringSplit($sContent, @LF, $STR_ENTIRESPLIT)
+	Local $sCurrentSection = ""
+
+	For $i = 1 To $aLines[0]
+		Local $sLine = StringStripWS($aLines[$i], 3)
+		If $sLine = "" Then ContinueLoop
+		If StringLeft($sLine, 1) = ";" Or StringLeft($sLine, 1) = "#" Then ContinueLoop
+
+		If StringLeft($sLine, 1) = "[" And StringRight($sLine, 1) = "]" Then
+			$sCurrentSection = StringTrimRight(StringTrimLeft($sLine, 1), 1)
+			ContinueLoop
+		EndIf
+
+		If $sCurrentSection <> $sSection Then ContinueLoop
+
+		Local $iPos = StringInStr($sLine, "=")
+		If $iPos < 2 Then ContinueLoop
+
+		Local $sLineKey = StringStripWS(StringLeft($sLine, $iPos - 1), 3)
+		If $sLineKey <> $sKey Then ContinueLoop
+
+		Local $sValue = StringStripWS(StringMid($sLine, $iPos + 1), 3)
+		; Native IniRead strips one pair of surrounding quotes.  Keep the
+		; same behaviour so language values like MENU_FILE="File" do not
+		; appear in the UI as "File".
+		If StringLen($sValue) >= 2 Then
+			Local $sFirstChar = StringLeft($sValue, 1)
+			Local $sLastChar = StringRight($sValue, 1)
+			If ($sFirstChar = '"' And $sLastChar = '"') Or ($sFirstChar = "'" And $sLastChar = "'") Then
+				$sValue = StringMid($sValue, 2, StringLen($sValue) - 2)
+			EndIf
+		EndIf
+
+		Return $sValue
+	Next
+
+	Return $sDefault
+EndFunc
+
 ; Translate text
 Func t($t, $aVars = 0, $lang = $language, $sDefault = 0)
-	Local $return = IniRead($lang = 'English'? $sEnglishLangFile: $langdir & '\' & $lang & '.ini', 'UniExtract', $t, '')
+	Local $return = _LangIniRead($lang = 'English'? $sEnglishLangFile: $langdir & '\' & $lang & '.ini', 'UniExtract', $t, '')
 	If $return == '' Then
 		Cout("Translation not found for term " & $t)
-		$return = IniRead($sEnglishLangFile, 'UniExtract', $t, '')
+		$return = _LangIniRead($sEnglishLangFile, 'UniExtract', $t, '')
 		If $return = '' Then
 			Cout("Warning: term " & $t & " is not defined")
 			Return $sDefault == 0? $t: $sDefault
@@ -687,7 +787,16 @@ Func ParseCommandLine()
 
 	$extract = True
 
-	Cout("Command line parameters: " & $CmdLineRaw)
+	; If the first context-menu/batch child is launched by Windows as /sub only,
+	; but silent mode is already enabled in preferences, normalize the current
+	; process arguments too.  Later queued children already get /silent via GetCmd().
+	If $silentmode And _ArraySearch($cmdline, "/silent") < 0 And _ArraySearch($cmdline, "/sub") > -1 Then
+		ReDim $cmdline[$cmdline[0] + 2]
+		$cmdline[0] += 1
+		$cmdline[$cmdline[0]] = "/silent"
+	EndIf
+
+	Cout("Command line parameters: " & __GetEffectiveCmdLineRaw())
 
 	If _ArraySearch($cmdline, "/silent") > -1 Then $silentmode = True
 	If _ArraySearch($cmdline, "/nolog") > -1 Then $bOptCreateLog = False
@@ -782,6 +891,13 @@ Func ParseCommandLine()
 	EndIf
 
 	If _ArraySearch($cmdline, "/close") > -1 Then terminate($STATUS_SILENT)
+EndFunc
+
+; Return command line text after internal normalization, so logs show the effective flags.
+Func __GetEffectiveCmdLineRaw()
+	Local $sReturn = $CmdLineRaw
+	If _ArraySearch($cmdline, "/silent") > -1 And Not StringRegExp(StringLower($sReturn), '(^|\s)/silent($|\s)') Then $sReturn &= " /silent"
+	Return $sReturn
 EndFunc
 
 ; Read complete preferences
@@ -1302,6 +1418,8 @@ EndFunc
 Func FileScan_ExeInfo($bUseCmd = $extract)
 	Local $sFileType = "", $sScanner = "Detect It Easy"
 
+	If Not $extract Then $bUseCmd = True
+
 	Cout("Start file scan using Detect It Easy (DiE)")
 	_CreateTrayMessageBox(t('SCANNING_EXE', "Detect It Easy (DiE)"))
 
@@ -1345,7 +1463,14 @@ If StringIsSpace($sFileType) Then
 			Local Const $LogFile = $logdir & "exeinfo.log"
 			RunWait($exeinfope & ' "' & $file & '*" /sx /log:"' & $LogFile & '"', $bindir, @SW_HIDE)
 			$sFileType = _FileRead($LogFile, True)
-			If StringInStr($sFileType, "File corrupted or Buffer Error") Or StringIsSpace($sFileType) Then Return FileScan_ExeInfo(False)
+			If StringInStr($sFileType, "File corrupted or Buffer Error") Or StringIsSpace($sFileType) Then
+				If Not $extract Then
+					Cout("Exeinfo PE command mode returned no usable output; suppressing GUI fallback in scan mode")
+					_DeleteTrayMessageBox()
+					Return
+				EndIf
+				Return FileScan_ExeInfo(False)
+			EndIf
 		Else
 			$aReturn = OpenExeInfo()
 			$TimerStart = TimerInit()
@@ -3189,6 +3314,10 @@ EndFunc
 ; Perform non-fatal extension-based extraction attempts before detector-based routing.
 Func _TryExtExtract($arctype, $arcdisp = 0, $additionalParameters = "")
 	If extract($arctype, $arcdisp, $additionalParameters, True, True) Then terminate($STATUS_SUCCESS, $filenamefull, $arctype, $arcdisp)
+	If $g_bPasswordFailureAbort Then
+		Cout("Password failure detected during extension-based attempt; stopping further fallback retries")
+		terminate($STATUS_PASSWORD, $file, $arctype, $arcdisp)
+	EndIf
 	If $g_bArchiveIntegrityError Then
 		Cout("Definitive archive corruption/broken-volume failure detected during extension-based attempt; stopping further fallback retries")
 		terminate($STATUS_FAILED, $file, $arctype, $arcdisp)
@@ -3411,6 +3540,7 @@ Func extract($arctype, $arcdisp = 0, $additionalParameters = "", $returnSuccess 
 	$g_bSymlinkOnlyWarning = False
 	$g_bArchiveIntegrityError = False
 	$success = $RESULT_UNKNOWN
+	$g_bPasswordFailureAbort = False
 
 	Cout("Starting " & $arctype & " extraction")
 	If $arcdisp <> 0 And $arcdisp <> -1 And $arcdisp <> "" Then Cout("File type is: " & $arcdisp)
@@ -4186,7 +4316,8 @@ Func extract($arctype, $arcdisp = 0, $additionalParameters = "", $returnSuccess 
 			Local $sPassword = _FindArchivePassword($rar & ' lt -p- "' & $file & '"', $rar & ' t -p"%PASSWORD%" "' & $file & '"', "encrypted", 0, 0)
 			Local $bPasswordRequiredRar = @extended
 			If $bPasswordRequiredRar Then terminate($STATUS_PASSWORD, $file, $arctype, $arcdisp)
-			_Run($rar & ' x -o+ -kb ' & ($sPassword == 0? '"': '-p"' & $sPassword & '" "') & $file & '"', $outdir, @SW_SHOW)
+			Local $sUnrarPasswordSwitch = ($sPassword == 0? ($silentmode? '-p- "': '"'): '-p"' & $sPassword & '" "')
+			_Run($rar & ' x -o+ -kb ' & $sUnrarPasswordSwitch & $file & '"', $outdir, @SW_SHOW)
 			If @error = 3 Then terminate($STATUS_MISSINGPART)
 			If @extended Then terminate($STATUS_PASSWORD, $file, $arctype, $arcdisp)
 
@@ -4599,6 +4730,11 @@ Func extract($arctype, $arcdisp = 0, $additionalParameters = "", $returnSuccess 
 			If @error Then Cout("Unknown arctype: " & $arctype & ". Feature not implemented!")
 	EndSwitch
 
+	If $g_bPasswordFailureAbort Then
+		Cout("Password failure detected; stopping this file and skipping further extractor fallbacks")
+		terminate($STATUS_PASSWORD, $file, $arctype, $arcdisp)
+	EndIf
+
 	Opt("WinTitleMatchMode", 1)
 	If Not $returnFail Then _DeleteTrayMessageBox()
 
@@ -4633,7 +4769,7 @@ Func extract($arctype, $arcdisp = 0, $additionalParameters = "", $returnSuccess 
 		$success = $RESULT_FAILED
 	EndIf
 
-	If $success = $RESULT_FAILED Then
+	If $success = $RESULT_FAILED Or $success = $RESULT_CANCELED Then
 		If $returnFail Then
 			Cout("Extraction attempt result: " & _ResultToText($success) & " (" & $success & ")")
 			$success = $RESULT_UNKNOWN
@@ -4839,7 +4975,15 @@ Func unpack($packer)
 	Local $sPath = $outdir & "\" & $sName & "." & $fileext
 	If FileExists($sPath) Then $sPath = _TempFile($outdir, $sName & "_", $fileext)
 
-	If Not Prompt(32 + 4, 'UNPACK_PROMPT', CreateArray($packer, PathGetFileName($sPath))) Then Return
+	; In batch/context-menu multi-file mode, do not suppress packer normalization.
+	; If DIE detects the original file as UPX/ASPack-packed, unpacking is a
+	; normalization step, not an optional extractor fallback.  Suppressing this
+	; prompt made non-silent batch skip UPX unpacking and then fall through to
+	; unrelated 7-Zip PE/resource extraction.  After unpacking, StartExtraction()
+	; re-runs normal detection on the unpacked file, so any real archive/installer
+	; inside is still handled by its proper extractor.
+	Local $bBatchAutoUnpack = __IsBatchModeActive()
+	If Not $bBatchAutoUnpack And Not Prompt(32 + 4, 'UNPACK_PROMPT', CreateArray($packer, PathGetFileName($sPath))) Then Return
 	_CreateTrayMessageBox(t('EXTRACTING') & @CRLF & $packer & " " & t('TERM_COMPRESSED'))
 
 	; Unpack file
@@ -4859,8 +5003,11 @@ Func unpack($packer)
 
 	; Success evaluation
 	If FileExists($sPath) Then
-		; Prompt if unpacked file should be scanned
-		If Prompt(32 + 4, 'UNPACK_AGAIN', CreateArray($filenamefull, PathGetFileName($sPath))) Then
+		; In batch mode, always continue with normal detection of the unpacked file.
+		; This makes silent and non-silent batch deterministic and lets DIE/normal
+		; detection decide whether the unpacked file is a real archive/installer or
+		; just an unsupported executable.
+		If $bBatchAutoUnpack Or Prompt(32 + 4, 'UNPACK_AGAIN', CreateArray($filenamefull, PathGetFileName($sPath))) Then
 			$file = $sPath
 			StartExtraction()
 		Else
@@ -5569,8 +5716,8 @@ Func terminate($status, $fname = '', $arctype = '', $arcdisp = '')
 	If UBound($aWarnings) > 0 Then Cout("Warnings:" & @CRLF & _ArrayToString($aWarnings))
 
 	; When multiple files are selected and executed via command line, they are added to batch queue, but the working instance uses in-memory data.
-	; So we need to look for changes in the batch queue file, so batch mode could be enabled if necessary.
-	If Not $silentmode And GetBatchQueue() Then $silentmode = True
+	; Look for queue changes, but do not convert non-silent batch children to silent mode.
+	If Not $silentmode And GetBatchQueue() Then Cout("Batch queue detected; preserving non-silent interactive mode")
 
 	; Save local statistics
 	IniWrite($prefs, "Statistics", $status, Number(IniRead($prefs, "Statistics", $status, 0)) + 1)
@@ -5601,10 +5748,10 @@ Func terminate($status, $fname = '', $arctype = '', $arcdisp = '')
 
 		; Display error information and exit
 		Case $STATUS_UNKNOWNEXE
-			GUI_Error_UnknownExt()
+			If Not __IsBatchModeActive() Then GUI_Error_UnknownExt()
 			$exitcode = 3
 		Case $STATUS_UNKNOWNEXT
-			GUI_Error_UnknownExt()
+			If Not __IsBatchModeActive() Then GUI_Error_UnknownExt()
 			$exitcode = 4
 		Case $STATUS_INVALIDFILE
 			Prompt(16, 'INVALID_FILE', $file)
@@ -5616,7 +5763,7 @@ Func terminate($status, $fname = '', $arctype = '', $arcdisp = '')
 			Cout("Suppressed NOTPACKED dialog for: " & $file & " (" & $sFileType & ")")
 			$exitcode = 6
 		Case $STATUS_NOTSUPPORTED
-			GUI_Error_WithFeedbackButton("NOT_SUPPORTED_TITLE", t('NOT_SUPPORTED', $filename))
+			If Not __IsBatchModeActive() Then GUI_Error_WithFeedbackButton("NOT_SUPPORTED_TITLE", t('NOT_SUPPORTED', $filename))
 			$exitcode = 7
 		Case $STATUS_MISSINGEXE
 			Prompt(48, 'MISSING_EXE', CreateArray($file, $arctype))
@@ -5642,7 +5789,7 @@ Func terminate($status, $fname = '', $arctype = '', $arcdisp = '')
 
 			; Display failed attempt information and exit
 		Case $STATUS_FAILED
-			If Not $silentmode And Prompt(256 + 16 + 4, 'EXTRACT_FAILED', CreateArray($filenamefull, $arcdisp)) Then
+			If Not $silentmode And Not __IsBatchModeActive() And Prompt(256 + 16 + 4, 'EXTRACT_FAILED', CreateArray($filenamefull, $arcdisp)) Then
 				ShellExecute(SaveLog($status))
 				$bLogSaved = True
 			EndIf
@@ -5662,8 +5809,8 @@ Func terminate($status, $fname = '', $arctype = '', $arcdisp = '')
 			EndIf
 	EndSwitch
 
-	; Write error log if in batchmode
-	If $exitcode <> 0 And $silentmode And $extract Then
+	; Write error log if in batchmode, both silent and non-silent, so final batch summary can show failures.
+	If $exitcode <> 0 And $extract And ($silentmode Or __IsBatchModeActive()) Then
 		Local $hFile = FileOpen($logdir & "errorlog.txt", $FO_CREATEPATH + $FO_APPEND)
 		Local $sMsg = GetDateTime() & " " & ($filenamefull = ""? $fname: $filenamefull) & " (" & StringUpper($status)& ")" & " - " & $arctype  & @CRLF
 		FileWrite($hFile, $sMsg)
@@ -5689,7 +5836,7 @@ Func terminate($status, $fname = '', $arctype = '', $arcdisp = '')
 	   $status = $STATUS_BATCH) Or ($status = $STATUS_FILEINFO And $silentmode) Then _
 		SaveLog($shortStatus)
 
-	If $batchEnabled = 1 And $status <> $STATUS_SILENT Then ; Don't start batch if gui is closed
+	If __IsBatchModeActive() And $status <> $STATUS_SILENT Then ; Continue queued batch items even if this child loaded a stale batchenabled=0
 		; Start next extraction
 		BatchQueuePop()
 	ElseIf $bOptKeepOpen And $cmdline[0] = 0 And $status <> $STATUS_SILENT Then
@@ -5864,6 +6011,72 @@ Func __GetMultipartInfo($sPath, ByRef $sKey, ByRef $iOrder)
 	Return False
 EndFunc
 
+; Return True if this is a later multipart volume and the preferred first/start volume exists beside it.
+; This is a final batch-run guard, so downstream parts cannot be launched even if they reached the queue.
+Func __IsLaterMultipartVolumeWithPreferredSibling($sPath, ByRef $sPreferredPath)
+	$sPreferredPath = ""
+	If StringIsSpace($sPath) Then Return False
+
+	Local $sNormPath = StringLower($sPath)
+	Local $aMatch
+
+	$aMatch = StringRegExp($sNormPath, '^(.*?\.7z\.)(\d{3})$', 1)
+	If IsArray($aMatch) And Number($aMatch[1]) > 1 Then
+		$sPreferredPath = $aMatch[0] & "001"
+		Return FileExists($sPreferredPath)
+	EndIf
+
+	$aMatch = StringRegExp($sNormPath, '^(.*?\.zip\.)(\d{3})$', 1)
+	If IsArray($aMatch) And Number($aMatch[1]) > 1 Then
+		$sPreferredPath = $aMatch[0] & "001"
+		Return FileExists($sPreferredPath)
+	EndIf
+
+	$aMatch = StringRegExp($sNormPath, '^(.*?\.part)(\d+)\.rar$', 1)
+	If IsArray($aMatch) And Number($aMatch[1]) > 1 Then
+		$sPreferredPath = $aMatch[0] & "1.rar"
+		Return FileExists($sPreferredPath)
+	EndIf
+
+	; Exotic/generic split names. Keep this conservative: skip only a later
+	; volume when the preferred first volume exists beside it. Do not match
+	; installer-style payloads such as data2.cab or setup-2.bin.
+	$aMatch = StringRegExp($sNormPath, '^(.*?\.)(\d{3})$', 1)
+	If IsArray($aMatch) Then
+		Local $iGenericVolume = Number($aMatch[1])
+		If $iGenericVolume > 1 Then
+			$sPreferredPath = $aMatch[0] & "001"
+			If FileExists($sPreferredPath) Then Return True
+		EndIf
+		If $iGenericVolume > 0 Then
+			$sPreferredPath = $aMatch[0] & "000"
+			If FileExists($sPreferredPath) Then Return True
+		EndIf
+	EndIf
+
+	$aMatch = StringRegExp($sNormPath, '^(.*?\.part)(\d+)$', 1)
+	If IsArray($aMatch) And Number($aMatch[1]) > 1 Then
+		$sPreferredPath = $aMatch[0] & "1"
+		If FileExists($sPreferredPath) Then Return True
+		$sPreferredPath = $aMatch[0] & StringRight("0000000001", StringLen($aMatch[1]))
+		Return FileExists($sPreferredPath)
+	EndIf
+
+	$aMatch = StringRegExp($sNormPath, '^(.*?\.)(r)(\d{2})$', 1)
+	If IsArray($aMatch) Then
+		$sPreferredPath = $aMatch[0] & "rar"
+		Return FileExists($sPreferredPath)
+	EndIf
+
+	$aMatch = StringRegExp($sNormPath, '^(.*?\.)(z)(\d{2})$', 1)
+	If IsArray($aMatch) Then
+		$sPreferredPath = $aMatch[0] & "zip"
+		Return FileExists($sPreferredPath)
+	EndIf
+
+	Return False
+EndFunc
+
 ; Extract input file path from stored batch queue command line
 Func __GetBatchQueueFile($sCmdLine)
 	Local $aMatch = StringRegExp($sCmdLine, '^"([^"]+)"', 1)
@@ -5871,8 +6084,43 @@ Func __GetBatchQueueFile($sCmdLine)
 	Return $aMatch[0]
 EndFunc
 
+; Compare queued batch items by input file only, ignoring switches like /silent.
+Func __SameBatchQueueFile($sFileA, $sFileB)
+	If StringIsSpace($sFileA) Or StringIsSpace($sFileB) Then Return False
+	Return StringLower(_PathFull($sFileA)) = StringLower(_PathFull($sFileB))
+EndFunc
+
+; Remove any remaining queued entries for the same input file after one entry has been popped.
+; This prevents duplicate processing when the same file was queued once as /sub and once as /sub /silent.
+Func __BatchQueueRemoveQueuedFileDuplicates($sFile)
+	If StringIsSpace($sFile) Then Return
+
+	Local $hLock = _BatchQueue_Lock()
+	If $hLock = 0 Then Return
+
+	Local $aQueue = _BatchQueue_ReadArray_NoLock()
+	Local $bChanged = False
+	For $i = UBound($aQueue) - 1 To 0 Step -1
+		Local $sQueuedFile = __GetBatchQueueFile($aQueue[$i])
+		If __SameBatchQueueFile($sQueuedFile, $sFile) Then
+			Cout("Removing duplicate queued batch file: " & $aQueue[$i])
+			_ArrayDelete($aQueue, $i)
+			$bChanged = True
+		EndIf
+	Next
+
+	If $bChanged Then _BatchQueue_WriteArray_NoLock($aQueue)
+	_BatchQueue_Unlock($hLock)
+EndFunc
+
+; Preserve silent mode when launching or storing an already queued item that was stored without /silent.
+Func __BatchQueueEnsureSilentArg($sCmdLine)
+	If $silentmode And Not StringRegExp(StringLower($sCmdLine), '(^|\s)/silent($|\s)') Then Return $sCmdLine & " /silent"
+	Return $sCmdLine
+EndFunc
+
 ; Create command line for current file
-Func GetCmd($silent = True)
+Func GetCmd($silent = False)
 	If Not $file Then Return SetError(1)
 	Local $return = Quote($file)
 
@@ -5894,6 +6142,7 @@ EndFunc
 Func AddToBatch()
 	Local $cmdline = GetCmd()
 	If @error Then Return Cout("Failed to add file to batch queue: invalid file parameter: " & $file)
+	$cmdline = __BatchQueueEnsureSilentArg($cmdline)
 
 	Local $hLock = _BatchQueue_Lock()
 	If $hLock = 0 Then Return Cout("Failed to lock batch queue")
@@ -5902,7 +6151,8 @@ Func AddToBatch()
 	Local $sBatchQueueContent = _BatchQueue_ArrayToText($aQueue)
 	Local $bDuplicate = False
 	For $i = 0 To UBound($aQueue) - 1
-		If $aQueue[$i] = $cmdline Then
+		If $aQueue[$i] = $cmdline Or __SameBatchQueueFile(__GetBatchQueueFile($aQueue[$i]), $file) Then
+			If $silentmode Then $aQueue[$i] = __BatchQueueEnsureSilentArg($aQueue[$i])
 			$bDuplicate = True
 			ExitLoop
 		EndIf
@@ -5911,6 +6161,7 @@ Func AddToBatch()
 	Local $bAddFile = True
 	If $bDuplicate Then
 		If $silentmode Or $batchEnabled Then
+			If $silentmode Then _BatchQueue_WriteArray_NoLock($aQueue) ; Preserve /silent on an already queued same-file entry
 			Cout("Skipping duplicate batch file " & $filenamefull)
 			_BatchQueue_Unlock($hLock)
 			EnableBatchMode()
@@ -6067,9 +6318,19 @@ Func BatchQueuePop()
 		EnableBatchMode(False)
 		If FileExists($fileScanLogFile) Then ShellExecute($fileScanLogFile)
 		Local $return = _FileRead($logdir & "errorlog.txt", True)
-		If $return <> "" Then MsgBox($iTopmost + 48, $name, t('BATCH_FINISH', $return))
+		If $return <> "" Then _BatchFinishPrompt($return)
 		If $bOptKeepOpen Then Run(Quote(@ScriptFullPath))
 		Return
+	EndIf
+
+	Local $sElementFile = __GetBatchQueueFile($element)
+	__BatchQueueRemoveQueuedFileDuplicates($sElementFile)
+	$element = __BatchQueueEnsureSilentArg($element)
+
+	Local $sPreferredVolume = ""
+	If __IsLaterMultipartVolumeWithPreferredSibling($sElementFile, $sPreferredVolume) Then
+		Cout("Skipping later multipart batch file " & PathGetFileName($sElementFile) & "; preferred volume exists: " & PathGetFileName($sPreferredVolume))
+		Return BatchQueuePop()
 	EndIf
 
 	Cout("Next batch element: " & $element)
@@ -6090,6 +6351,42 @@ Func BatchQueuePop()
 
 		Return
 	EndIf
+EndFunc
+
+; Remove multiline detector/details from the final batch popup only.
+; The real log files are unchanged; this only keeps the summary readable.
+Func _BatchFinishPopupText($sErrors)
+	Local $sClean = ""
+	Local $aLines = StringSplit(StringStripCR($sErrors), @LF, 2)
+	If @error Or Not IsArray($aLines) Then Return $sErrors
+
+	For $i = 0 To UBound($aLines) - 1
+		Local $sLine = StringStripWS($aLines[$i], 3)
+		If $sLine = "" Then ContinueLoop
+
+		; Keep only real error entries. Continuation lines from multiline detector output
+		; such as PE/linker/compiler details are intentionally hidden in the popup.
+		If Not StringRegExp($sLine, '^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\s+') Then ContinueLoop
+
+		; Remove the leading timestamp from the popup row only.
+		; The real log/error text remains unchanged.
+		$sLine = StringRegExpReplace($sLine, '^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\s+', '')
+
+		; If the archive/type text was multiline, the first line may end with a bare dash.
+		; Remove that cosmetic leftover rather than showing detector details below it.
+		$sLine = StringRegExpReplace($sLine, '\s+-\s*$', '')
+		$sClean &= $sLine & @CRLF
+	Next
+
+	Return StringStripWS($sClean, 2)
+EndFunc
+
+; Final batch summary popup. Cosmetic only: filter continuation details and keep original MsgBox behavior.
+Func _BatchFinishPrompt($sErrors)
+	Local $sPopupErrors = _BatchFinishPopupText($sErrors)
+	; Cosmetic only: keep one empty line between the last error row and the final log-directory note.
+	If $sPopupErrors <> "" Then $sPopupErrors &= @CRLF
+	MsgBox($iTopmost + 48, $name, t('BATCH_FINISH', $sPopupErrors))
 EndFunc
 
 ; Enable batch mode
@@ -6168,6 +6465,20 @@ Func _BatchQueue_ReadArray_NoLock()
 	Next
 
 	Return $aClean
+EndFunc
+
+Func __BatchQueueHasItems()
+	Local $hLock = _BatchQueue_Lock()
+	If $hLock = 0 Then Return False
+
+	Local $aQueue = _BatchQueue_ReadArray_NoLock()
+	_BatchQueue_Unlock($hLock)
+
+	Return IsArray($aQueue) And UBound($aQueue) > 0
+EndFunc
+
+Func __IsBatchModeActive()
+	Return $batchEnabled = 1 Or __BatchQueueHasItems()
 EndFunc
 
 Func _BatchQueue_ArrayToText(ByRef $aQueue)
@@ -6541,6 +6852,25 @@ Func _HasFatalArchiveIntegrityError($sLog)
 EndFunc
 
 ; Check for success or failure indicator in log
+	Func __HasToolSuccessText($sLog)
+		Return StringInStr($sLog, "Everything is Ok") Or _
+				StringInStr($sLog, "0 failed") Or StringInStr($sLog, "All files OK") Or _
+				StringInStr($sLog, "All OK") Or StringInStr($sLog, "done.") Or _
+				StringInStr($sLog, "Done ...") Or StringInStr($sLog, ": done") Or _
+				StringInStr($sLog, "Result:	Successful, errorcode 0") Or StringInStr($sLog, "... Successful") Or _
+				StringInStr($sLog, "Extract files [ ") Or StringInStr($sLog, "Done; file is OK") Or _
+				StringInStr($sLog, "Successfully extracted to") Or StringInStr($sLog, "[+] Finished!")
+	EndFunc
+
+	Func __HasPasswordFailureText($sLog)
+		Return StringInStr($sLog, "Wrong password?") Or _
+				StringInStr($sLog, "The specified password is incorrect.") Or _
+				StringInStr($sLog, "Archive encrypted.") Or _
+				StringInStr($sLog, "Corrupt file or wrong password") Or _
+				StringInStr($sLog, "ERROR: Wrong password") Or _
+				StringInStr($sLog, "Enter password")
+	EndFunc
+
 Func EvaluateLog($sLog)
 	ParseWarnings($sLog)
 
@@ -6554,23 +6884,17 @@ Func EvaluateLog($sLog)
 	; Interactive extractors can log a wrong password first, then succeed after the user re-enters
 	; the correct password.  In that case keep the final successful result instead of treating the
 	; earlier failed attempt as fatal.
-	Local $bHasSuccessIndicator = StringInStr($sLog, "Everything is Ok") Or _
-			StringInStr($sLog, "0 failed") Or StringInStr($sLog, "All files OK") Or _
-			StringInStr($sLog, "All OK") Or StringInStr($sLog, "done.") Or _
-			StringInStr($sLog, "Done ...") Or StringInStr($sLog, ": done") Or _
-			StringInStr($sLog, "Result:	Successful, errorcode 0") Or StringInStr($sLog, "... Successful") Or _
-			StringInStr($sLog, "Extract files [ ") Or StringInStr($sLog, "Done; file is OK") Or _
-			StringInStr($sLog, "Successfully extracted to") Or StringInStr($sLog, "[+] Finished!")
+		Local $bHasSuccessIndicator = __HasToolSuccessText($sLog)
 
-	If Not $bHasSuccessIndicator And (StringInStr($sLog, "Wrong password?") Or StringInStr($sLog, "The specified password is incorrect.") Or _
-	   StringInStr($sLog, "Archive encrypted.") Or StringInStr($sLog, "Corrupt file or wrong password") Or _
-	   StringInStr($sLog, "ERROR: Wrong password") Or StringInStr(_StringGetLine($sLog, -1), "Enter password")) Then
-		Cout("Invalid password")
-		$success = $RESULT_FAILED
-		SetError(1, 1)
+		If Not $bHasSuccessIndicator And (__HasPasswordFailureText($sLog) Or StringInStr(_StringGetLine($sLog, -1), "Enter password")) Then
+			Cout("Invalid password")
+			$g_bPasswordFailureAbort = True
+			$success = $RESULT_FAILED
+			SetError(1, 1)
 	ElseIf StringInStr($sLog, "Break signaled") Or StringInStr($sLog, "Program aborted") Or StringInStr($sLog, "User break") Then
 		Cout("Cancelled by user")
 		$success = $RESULT_CANCELED
+		SetError(4)
 	ElseIf StringInStr($sLog, "There is not enough space on the disk") Or _
 		   StringInStr($sLog, "[x] There is not enough space in working directory. Unpacking would most likely fail!") Then
 		$success = $RESULT_NOFREESPACE
@@ -6682,8 +7006,15 @@ Func _Run($f, $sWorkingDir = $outdir, $show_flag = @SW_MINIMIZE, $bUseCmd = True
 	Global $run = 0, $runtitle = 0
 	Local $return = "", $size = 1, $lastSize = 0
 	Local Const $LogFile = $logdir & "teelog.txt"
+	Local $sRunTitleMarker = ""
 
 	$f = _MakeCommand($f, $bUseCmd) & ($bUseTee? ' 2>&1 | ' & $tee & ' "' & $LogFile & '"': '')
+	If $bUseCmd And StringLeft($f, StringLen($cmd)) = $cmd Then
+		$sRunTitleMarker = "UniExtract-" & @AutoItPID & "-" & StringReplace(String(TimerInit()), ".", "")
+		Local $sRunCommand = StringTrimLeft($f, StringLen($cmd))
+		If StringLeft($sRunCommand, 2) = '""' Then $sRunCommand = StringTrimLeft($sRunCommand, 1)
+		$f = $cmd & "title " & $sRunTitleMarker & " & " & $sRunCommand
+	EndIf
 
 	Cout("Executing: " & $f)
 	Cout("           with options: showFlag = " & $show_flag & ", initialShow = " & $bInitialShow & ", patternSearch = " & $bPatternSearch & ", workingdir = " & $sWorkingDir)
@@ -6692,6 +7023,10 @@ Func _Run($f, $sWorkingDir = $outdir, $show_flag = @SW_MINIMIZE, $bUseCmd = True
 	If $bUseTee Then
 		HasPlugin($tee)
 		If Not FileExists($logdir) Then DirCreate($logdir)
+
+		; Always start with a fresh tee log.  A killed/aborted extractor can leave stale
+		; password text behind, which must not be evaluated by the next queued file.
+		FileDelete($LogFile)
 
 		$run = Run($f, $sWorkingDir, $bInitialShow? @SW_MINIMIZE: $show_flag)
 		If @error Then
@@ -6707,6 +7042,10 @@ Func _Run($f, $sWorkingDir = $outdir, $show_flag = @SW_MINIMIZE, $bUseCmd = True
 			If TimerDiff($TimerStart) > 5000 Then ExitLoop
 		Until ProcessExists($run)
 
+		; Do not wait for the temporary console title here.
+		; Waiting here delays every detector/extractor command and changes batch /sub timing,
+		; which can let downstream split volumes run far enough to create useless logs.
+		; The title marker is used later only if an actual input/password prompt is detected.
 		$runtitle = _WinGetByPID($run)
 		If $bInitialShow Then WinSetState($runtitle, "", $show_flag)
 		Cout("Runtitle: " & $runtitle)
@@ -6727,16 +7066,30 @@ Func _Run($f, $sWorkingDir = $outdir, $show_flag = @SW_MINIMIZE, $bUseCmd = True
 			$return = FileRead($hFile)
 			If $return <> $state Then
 				$state = $return
-				; Automatically show cmd window when user input needed
+				; Do not kill an interactive extractor immediately after the first wrong password.
+				; Let the tool finish, then EvaluateLog() will mark PASSWORD and the caller
+				; will stop further extractor fallbacks for this file.  Killing here can leave
+				; stale password text in teelog.txt and contaminate the next queued file.
+				; Automatically show cmd window when user input is needed, but keep silent mode unattended.
 				If StringInStr($return, "already exist") Or StringInStr($return, "overwrite") Or StringInStr($return, " replace") _
 				Or StringInStr($return, "password") Or StringInStr($return, "Not enough free space available") _
 				Or StringInStr($return, "you must choose a new filename") Or StringInStr($return, "Insert disk with") _
 				Or StringInStr($return, "[R]etry") Then
+					If $silentmode Then
+						Cout("Input prompt suppressed by silent mode")
+						$success = $RESULT_FAILED
+						KillHelper()
+						ExitLoop
+					EndIf
+
 					Cout("User input needed")
-					WinSetState($runtitle, "", @SW_SHOW)
+					; Re-acquire and restore the console window with retries.
+					; Some console extractors briefly change/recreate the console title, so
+					; a single WinGetHandle()/WinSetState() attempt is not reliable.
+					Local $hInputWindow = _RestoreRunWindow($run, $runtitle, $sRunTitleMarker)
+					If Not @error Then $runtitle = $hInputWindow
 					GUICtrlSetFont($idTrayStatusExt, 8.5, 900)
 					_SetTrayMessageBoxText(t('INPUT_NEEDED'))
-					WinActivate($runtitle)
 					$lastSize = Round((_DirGetSize($outdir, 0) - $initdirsize) / 1024 / 1024, 3)
 					ContinueLoop
 				EndIf
@@ -6766,7 +7119,12 @@ Func _Run($f, $sWorkingDir = $outdir, $show_flag = @SW_MINIMIZE, $bUseCmd = True
 		FileDelete($LogFile)
 
 		EvaluateLog($return)
-		SetError(@error, @extended)
+			Local $iEvalError = @error, $iEvalExtended = @extended
+			If $g_bPasswordFailureAbort Then
+				SetError(1, 1)
+			Else
+				SetError($iEvalError, $iEvalExtended)
+			EndIf
 
 	; Do not create log
 	Else
@@ -6793,8 +7151,7 @@ Func _Run($f, $sWorkingDir = $outdir, $show_flag = @SW_MINIMIZE, $bUseCmd = True
 				If $TBgui Then _SetTrayMessageBoxText($size & " MB")
 			Else
 				If $TimerStart And TimerDiff($TimerStart) > 60000 Then
-					WinSetState($runtitle, "", @SW_SHOW)
-					WinActivate($runtitle)
+					; Do not restore/activate extractor windows here; only do it after an actual input prompt is detected.
 					Sleep(5000)
 					$TimerStart = 0
 				EndIf
@@ -7825,6 +8182,10 @@ Func Prompt($iShowFlag, $sMsg, $aVars = 0, $bTerminate = False)
 		Cout("Assuming yes to message " & $sMsg)
 		Return 1
 	EndIf
+	If __IsBatchModeActive() Then
+		Cout("Suppressing batch prompt " & $sMsg)
+		Return 0
+	EndIf
 	Local $return = MsgBox($iTopmost + $iShowFlag, $title, t($sMsg, $aVars))
 	If $return == 1 Or $return == 6 Then
 		Return 1
@@ -7840,6 +8201,10 @@ Func CustomPrompt($sMsg, $aVars)
 	If $eCustomPromptSetting == $PROMPT_ALWAYS Then Return True
 	If $eCustomPromptSetting == $PROMPT_NEVER Then Return False
 	If $silentmode Then Return True
+	If __IsBatchModeActive() Then
+		Cout("Suppressing batch custom prompt " & $sMsg)
+		Return False
+	EndIf
 
 	Opt("GUIOnEventMode", 0)
 	Local $return = False
@@ -7911,6 +8276,36 @@ Func _SetState($aControls, $state)
 	For $idControlID In $aControls
 		GUICtrlSetState($idControlID, $state)
 	Next
+EndFunc
+
+; Restore the active extractor console window reliably.
+; Prefer the unique console title marker, fall back to the cached handle, then to PID.
+Func _RestoreRunWindow($iPID, $hCached = 0, $sTitleMarker = "")
+	Local $hWnd = 0
+
+	For $i = 1 To 30
+		If $sTitleMarker <> "" Then
+			$hWnd = WinGetHandle($sTitleMarker)
+			If Not @error And $hWnd <> 0 Then ExitLoop
+		EndIf
+
+		If IsHWnd($hCached) And WinExists($hCached) Then
+			$hWnd = $hCached
+			ExitLoop
+		EndIf
+
+		$hWnd = _WinGetByPID($iPID)
+		If Not @error And $hWnd <> 0 Then ExitLoop
+
+		Sleep(100)
+	Next
+
+	If $hWnd = 0 Then Return SetError(1, 0, 0)
+
+	WinSetState($hWnd, "", @SW_RESTORE)
+	WinSetState($hWnd, "", @SW_SHOW)
+	WinActivate($hWnd)
+	Return SetError(0, 0, $hWnd)
 EndFunc
 
 ; Get title of a window by PID as returned by Run()
@@ -9453,7 +9848,7 @@ Func GUI_MethodSelectList($aEntries, $sStandard = "", $sText = "METHOD_GAME_LABE
 
 	Local Const $iWidth = 274, $iHeight = 460
 	Local $sSelection = 0
-	If $silentmode Then Return $sSelection
+	If $silentmode Or __IsBatchModeActive() Then Return $sSelection
 
 	Local $hGui = GUICreate($title, $iWidth, $iHeight, -1, -1, BitOR($WS_SIZEBOX, $WS_MINIMIZEBOX, $WS_CAPTION, $WS_POPUP, $WS_SYSMENU))
 	_GuiSetColor()
