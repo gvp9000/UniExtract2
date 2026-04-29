@@ -1,3 +1,17 @@
+v2.9.3
+Updated sqlite3.dll, sqlite3_x64.dll and sqlite3.exe to 3.53.0.
+Updated DiE database files to 20260427.
+Improved language file encoding support; /lang/*.ini files can now use UTF-8 encoding.
+Improved batch UPX/packer handling.
+Fixed batch/context-menu extraction handling.
+Fixed /silent propagation and behavior in batch mode.
+Fixed multipart/split archive skipping.
+Fixed wrong-password stop logic.
+Fixed UnRAR password handling in silent and non-silent batch mode.
+Fixed Exeinfo PE staying open in scan mode.
+Fixed final batch failure summary/logging behavior.
+Cleaned final batch failure popup formatting.
+
 v2.8.9
 Updated DiE database to 20260426.
 Updated TrIDDefs.TRD to 20260423.
