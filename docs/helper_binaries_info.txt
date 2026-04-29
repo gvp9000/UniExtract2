@@ -30,7 +30,7 @@ ConvertLIT									clit.exe						1.8			-	-	-	GNU GPL v3				Dan A. Jackson						h
 daa2iso										daa2iso.exe						0.1.7e		o	-	o	GNU GPL v2				Luigi Auriemma						http://aluigi.altervista.org/mytoolz.htm#daa2iso				
 DiE (Detect-it-easy)						die.exe							3.21		---------	MIT						horsicq								https://github.com/horsicq/DIE-engine/releases
 											diec.exe						-------		---------	-------					-------								-------
-											db (database)					2026/04/26	---------	-------					-------								https://github.com/horsicq/Detect-It-Easy/releases
+											db (database)					2026/04/27	---------	-------					-------								https://github.com/horsicq/Detect-It-Easy/releases
 demoleition									demoleition.exe					0.65		x	-	-	Freeware*				kao									https://lifeinhex.com/category/tools/
 Enigma VirtualBox unpacker					EnigmaVBUnpacker.exe			0.63		x	-	-	Freeware*				kao									https://lifeinhex.com/category/tools/
 E_WISE - WISE SETUP unpacker				E_WISE_W.exe					2002/07/01		-		Open Source				Veit Kannegieser					http://kannegieser.net/~veit/programm/index_e.htm				
