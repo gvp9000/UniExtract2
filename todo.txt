@@ -52,7 +52,6 @@ generic error message for failed extraction: check if only some file has errors 
 Converting to iso failes when iso file already exists (helper binary not terminating correctly)
 Overwriting files in general depends on extractor (sometimes asks, sometimes overwrites without asking)
 Batch mode might stop depending on the extractor, when user input is needed //make sure files do not exist before starting batch mode to avoid this
-Batch mode drops files
 qbms process seems to hang (with increased cpu usage) on large files with gaup_pro plugin (confirmed for null bytes, image file; might continue after a long time?)
 
 !!Compiling 64 bit version results in drag & drop application error!!
