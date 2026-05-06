@@ -1,0 +1,10 @@
+v2.9.6
+Improved Setup Factory / VISE / Gentee handling.
+Improved EXE extraction pipeline.
+PEiD fallback is now deferred instead of running too early.
+Removed generic CheckExt() from the EXE flow.
+Fixed several incorrect $TYPE_* mappings.
+NSIS and RAR SFX now use the generic 7-Zip path.
+Improved TrID fallback with multiple matches.
+Cleaner unsupported EXE status/logging.
+Overall: safer routing and fewer false positives.
