@@ -1,8 +1,0 @@
-v2.9.7
-Moved CheckGame() later in the EXE pipeline.
-Prevented game/resource fallback from running before known installer/SFX detection.
-Improved EXE detection priority for installer archives before generic 7-Zip probing.
-Added Atlantis installer detection heuristic for DiE:
-Detects Delphi/VCL/Turbo Linker based installers with FILES resource.
-Keeps DiE as primary detector instead of incorrectly falling to Exeinfo PE.
-Minor cleanup/reordering in pipeline comments and logic.
