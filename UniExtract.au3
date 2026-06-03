@@ -3,7 +3,7 @@
 #AutoIt3Wrapper_Outfile=.\UniExtract.exe
 #AutoIt3Wrapper_Res_Description=Universal Extractor
 #AutoIt3Wrapper_Res_ProductName=Universal Extractor
-#AutoIt3Wrapper_Res_Fileversion=2.9.6
+#AutoIt3Wrapper_Res_Fileversion=3.0.2
 #AutoIt3Wrapper_Res_ProductVersion=%fileversion%
 #AutoIt3Wrapper_Res_CompanyName=gvp9000
 #AutoIt3Wrapper_Res_Language=1033
@@ -130,7 +130,7 @@ Const $STATUS_SYNTAX = "syntax", $STATUS_FILEINFO = "fileinfo", $STATUS_UNKNOWNE
 	  $STATUS_FAILED = "failed", $STATUS_SUCCESS = "success", $STATUS_SILENT = "silent", $STATUS_TRAYEXIT = "trayexit"
 Const $TYPE_7Z = "7z", $TYPE_ACE = "ace", $TYPE_ACTUAL = "actual", $TYPE_AI = "ai", $TYPE_ALZ = "alz", $TYPE_ARC_CONV = "arc_conv", _
 	  $TYPE_AUDIO = "audio", $TYPE_BCM = "bcm", $TYPE_BOOTIMG = "bootimg", $TYPE_CAB = "cab", $TYPE_CHD = "chd", $TYPE_CHM = "chm", $TYPE_CI = "ci", _
-	  $TYPE_CIC = "cic", $TYPE_CTAR = "ctar", $TYPE_DGCA = "dgca", $TYPE_DAA = "daa", $TYPE_DCP = "dcp", $TYPE_EI = "ei", $TYPE_ENIGMA = "enigma", _
+	  $TYPE_CIC = "cic", $TYPE_CTAR = "ctar", $TYPE_DGCA = "dgca", $TYPE_DAA = "daa", $TYPE_DCP = "dcp", $TYPE_ECM = "ecm", $TYPE_EI = "ei", $TYPE_ENIGMA = "enigma", _
 	  $TYPE_FEAD = "fead", $TYPE_FORGE = "installforge", $TYPE_FREEARC = "freearc", $TYPE_FSB = "fsb", $TYPE_GARBRO = "garbro", $TYPE_GHOST = "ghost", _
 	  $TYPE_HLP = "hlp", $TYPE_INNO = "inno", $TYPE_ISCAB = "iscab", $TYPE_ISCRIPT = "installscript", $TYPE_ISEXE = "isexe", $TYPE_ISZ = "isz", _
 	  $TYPE_KGB = "kgb", $TYPE_LZ = "lz", $TYPE_LZO = "lzo", $TYPE_LZX = "lzx", $TYPE_MOLE = "mole", $TYPE_MSCF = "mscf", $TYPE_MSI = "msi", _
@@ -142,7 +142,7 @@ Const $TYPE_7Z = "7z", $TYPE_ACE = "ace", $TYPE_ACTUAL = "actual", $TYPE_AI = "a
 	  $TYPE_VSSFX_PATH = "vssfxpath", $TYPE_WISE = "wise", $TYPE_WIX = "wix", $TYPE_WOLF = "wolf", $TYPE_ZIP = "zip", $TYPE_ZOO = "zoo", _
 	  $TYPE_ZPAQ = "zpaq", $TYPE_ATLANTIS = "atlantis"
 Const $aExtractionTypes = [$TYPE_7Z, $TYPE_ACE, $TYPE_ACTUAL, $TYPE_AI, $TYPE_ALZ, $TYPE_ARC_CONV, $TYPE_AUDIO, $TYPE_BCM, $TYPE_BOOTIMG, _
-	  $TYPE_CAB, $TYPE_CHD, $TYPE_CHM, $TYPE_CI, $TYPE_CIC, $TYPE_CTAR, $TYPE_DGCA, $TYPE_DAA, $TYPE_DCP, $TYPE_EI, $TYPE_ENIGMA, $TYPE_FEAD, _
+	  $TYPE_CAB, $TYPE_CHD, $TYPE_CHM, $TYPE_CI, $TYPE_CIC, $TYPE_CTAR, $TYPE_DGCA, $TYPE_DAA, $TYPE_DCP, $TYPE_ECM, $TYPE_EI, $TYPE_ENIGMA, $TYPE_FEAD, _
 	  $TYPE_FORGE, $TYPE_FREEARC, $TYPE_FSB, $TYPE_GARBRO, $TYPE_GHOST, $TYPE_HLP, $TYPE_INNO, $TYPE_ISCAB, $TYPE_ISCRIPT, $TYPE_ISEXE, $TYPE_ISZ, _
 	  $TYPE_KGB, $TYPE_LZ, $TYPE_LZO, $TYPE_LZX, $TYPE_MOLE, $TYPE_MSCF, $TYPE_MSI, $TYPE_MSM, $TYPE_MSP, $TYPE_MSU, $TYPE_NBH, $TYPE_NSIS, _
 	  $TYPE_PDF, $TYPE_PEA, $TYPE_QBMS, $TYPE_RAI, $TYPE_RAR, $TYPE_RGSS, $TYPE_ROBO, $TYPE_RPA, $TYPE_SFARK, $TYPE_SIS, $TYPE_SQLITE, _
@@ -205,6 +205,9 @@ Global $g_bSymlinkOnlyWarning = False
 Global $g_bArchiveIntegrityError = False
 Global $g_sPrimaryDetectRaw = "", $g_sPrimaryDetectMatch = "", $g_sPrimaryDetectScanner = "", $g_bPrimaryStrongHit = False
 Global $g_sDetectionWinner = "", $g_sExtractorWinner = "", $g_sDetectedTypeForSummary = ""
+Global $g_sPipelineRows = "", $g_iPipelineSeq = 0
+Global $g_sPipelineTimeline = "", $g_sPipelineLine = "", $g_sPipelineToolVersions = ""
+Global $g_iPipelineWarn = 0, $g_iPipelineFail = 0, $g_iPipelineOk = 0, $g_iPipelineRun = 0
 Global $g_bStrictPipeline = True, $g_sStoredTridType = "", $g_sStoredUnixType = ""
 Global $oldpath, $oldoutdir, $sUnicodeName, $createdir
 Global $guiprefs, $TBgui = 0, $exStyle = -1, $idTrayStatusExt, $BatchBut, $idProgress, $sComError = 0
@@ -233,6 +236,7 @@ Const $7z = Quote($archdir & '7z.exe', True)
 Const $7zsplit = "7ZSplit.exe"
 Const $ace = "acefile.exe"
 Const $alz = "unalz.exe"
+Const $unecm = "unecm.exe"
 Const $arj = "arj.exe"
 Const $aspack = Quote($bindir & "AspackDie.exe", True)
 Const $bcm = Quote($archdir & "bcm.exe", True)
@@ -474,6 +478,16 @@ Func StartExtraction()
 	$g_sDetectionWinner = ""
 	$g_sExtractorWinner = ""
 	$g_sDetectedTypeForSummary = ""
+	$g_sPipelineRows = ""
+	$g_sPipelineTimeline = ""
+	$g_sPipelineLine = ""
+	$g_sPipelineToolVersions = ""
+	$g_iPipelineSeq = 0
+	$g_iPipelineWarn = 0
+	$g_iPipelineFail = 0
+	$g_iPipelineOk = 0
+	$g_iPipelineRun = 0
+	_PipelineStep("INPUT", "File", "INFO", $filenamefull)
 	$g_bStrictPipeline = True
 	$g_sStoredTridType = ""
 	$g_sStoredUnixType = ""
@@ -597,10 +611,6 @@ Func IsExe()
 	; InstallExplorer is still tried only by targeted VISE/Gentee/Setup Factory detector/marker routes above
 	; and by ResolveStrictPipeline() before 7-Zip when such a detector hit is stored.
 
-	; Bioruebe compatibility: EXE game/resource fallback was tried before 7-Zip.
-	; Keep it non-fatal: unsupported files simply continue to the strict 7-Zip/unix/detector fallback stages.
-	CheckGame()
-
 	; Bioruebe applied Exeinfo and TrID routes before generic 7-Zip.
 	; Apply stored detector/TrID routes here so 7-Zip cannot steal or block a specific installer extractor.
 	ResolveStrictPipeline(True, False)
@@ -628,6 +638,17 @@ Func IsExe()
 	Else
 		Cout("Skipping 7zip probe because detectors corroborated " & $sSkip7zReason)
 	EndIf
+
+	; Keep broad game/resource probes late for EXEs so they do not run before known
+	; installer/SFX routes or the generic 7-Zip archive/SFX probe.
+	; If a real installer was already identified and tried, do not send setup.exe
+	; through broad QuickBMS game probes. They can hang and keep the temp copy locked.
+	If _ShouldSkipBroadGameProbeForInstaller() Then
+		Cout("Skipping broad game archive probes because detectors already identified a known installer")
+	Else
+		CheckGame()
+	EndIf
+
 	FileScan_UnixFile()
 	If $g_bArchiveIntegrityError Then
 		Cout("Definitive archive corruption/broken-volume failure detected after unix file tool stage; aborting strict fallback")
@@ -1152,6 +1173,7 @@ EndFunc
 ; Scan file with TrID
 Func FileScan_Trid($analyze = 1)
 	If $tridfailed Then Return
+	Local $sPipelineDetected = ""
 
 	_CreateTrayMessageBox(t('SCANNING_FILE', "TrID"))
 	Cout("Starting file scan using TrID")
@@ -1168,6 +1190,7 @@ Func FileScan_Trid($analyze = 1)
 					$sFileType &= $aReturn[$i] & @CRLF
 			Next
 			If $sFileType <> "" Then
+				$sPipelineDetected = $sFileType
 				_FiletypeAdd("TrID", $sFileType)
 				If $analyze Then tridcompare($sFileType)
 			Else
@@ -1178,6 +1201,7 @@ Func FileScan_Trid($analyze = 1)
 		Else
 			For $i = 1 To $iResults
 				Local $sType = TridLib_GetType($i)
+				$sPipelineDetected &= ($sPipelineDetected <> "" ? @CRLF : "") & $sType
 				_FiletypeAdd("TrID", $sType)
 				If $appendext And $i == 1 Then RenameWithTridExtension()
 				If $analyze And $i < 4 Then tridcompare($sType)
@@ -1195,9 +1219,16 @@ Func FileScan_Trid($analyze = 1)
 		Next
 
 		If $sFileType <> "" Then
+			$sPipelineDetected = $sFileType
 			_FiletypeAdd("TrID", $sFileType)
 			If $analyze Then tridcompare($sFileType)
 		EndIf
+	EndIf
+
+	If $sPipelineDetected <> "" Then
+		_PipelineStep("DETECTOR", "TrID", "OK", _PipelineCompactDetails($sPipelineDetected))
+	Else
+		_PipelineStep("DETECTOR", "TrID", "UNKNOWN", "No usable output")
 	EndIf
 
 	_DeleteTrayMessageBox()
@@ -1339,7 +1370,12 @@ Func FileScan_UnixFile()
 	Local $sFileType = FetchStdout($filetool & ' "' & $file & '"', $filedir, @SW_HIDE)
 	$sFileType = StringReplace(StringReplace($sFileType, $file & ": ", ""), @CRLF, "")
 
-	If $sFileType And $sFileType <> "data" Then _FiletypeAdd("Unix File Tool", $sFileType)
+	If $sFileType And $sFileType <> "data" Then
+		_FiletypeAdd("Unix File Tool", $sFileType)
+		_PipelineStep("DETECTOR", "Unix File Tool", "OK", _PipelineCompactDetails($sFileType))
+	Else
+		_PipelineStep("DETECTOR", "Unix File Tool", "UNKNOWN", "No usable output")
+	EndIf
 
 	_DeleteTrayMessageBox()
 
@@ -1378,7 +1414,10 @@ Func FileScan_MediaInfo()
 
 	; Return if file is not a media file
 	$aReturn = StringSplit($aReturn[0], @CRLF, 2)
-	If UBound($aReturn) < 10 Then Return _DeleteTrayMessageBox()
+	If UBound($aReturn) < 10 Then
+		_PipelineStep("DETECTOR", "MediaInfo", "SKIPPED", "Not a media file / no detailed media output")
+		Return _DeleteTrayMessageBox()
+	EndIf
 
 	; Format returned string to align in message box
 	For $i in $aReturn
@@ -1396,6 +1435,7 @@ Func FileScan_MediaInfo()
 	Next
 
 	_FiletypeAdd("MediaInfo", $sFileType)
+	_PipelineStep("DETECTOR", "MediaInfo", "OK", _PipelineCompactDetails($sFileType))
 	_DeleteTrayMessageBox()
 EndFunc
 
@@ -1455,6 +1495,7 @@ EndFunc
 ; Scan file with Detect It Easy (DiE), fallback to Exeinfo PE
 Func FileScan_ExeInfo($bUseCmd = $extract)
 	Local $sFileType = "", $sScanner = "Detect It Easy"
+	Local $bDieRan = False, $sDiePipeline = ""
 
 	If Not $extract Then $bUseCmd = True
 
@@ -1462,6 +1503,7 @@ Func FileScan_ExeInfo($bUseCmd = $extract)
 	_CreateTrayMessageBox(t('SCANNING_EXE', "Detect It Easy (DiE)"))
 
 	If FileExists($diec_path) Then
+		$bDieRan = True
 		Local $sDieWorkDir = $bindir & "die"
 		Local $sDieLog = $logdir & "diec.log"
 		FileDelete($sDieLog)
@@ -1491,6 +1533,13 @@ Func FileScan_ExeInfo($bUseCmd = $extract)
 				EndIf
 			EndIf
 		EndIf
+	EndIf
+
+	$sDiePipeline = $sFileType
+	If $bDieRan Then
+		_PipelineStep("DETECTOR", "Detect It Easy", _PipelineDetectorStatus($sDiePipeline, _IsStrongPrimaryDetectorHit($sDiePipeline)), _PipelineCompactDetails($sDiePipeline))
+	Else
+		_PipelineStep("DETECTOR", "Detect It Easy", "SKIPPED", "diec.exe not found")
 	EndIf
 
 If StringIsSpace($sFileType) Or ($sScanner = "Detect It Easy" And Not _IsStrongPrimaryDetectorHit($sFileType)) Then
@@ -1530,6 +1579,8 @@ If StringIsSpace($sFileType) Or ($sScanner = "Detect It Easy" And Not _IsStrongP
 			CloseExeInfo($aReturn)
 		EndIf
 	EndIf
+
+	If $sScanner = "Exeinfo PE" Then _PipelineStep("DETECTOR", "Exeinfo PE", _PipelineDetectorStatus($sFileType, Not StringIsSpace($sFileType)), _PipelineCompactDetails($sFileType))
 
 	_DeleteTrayMessageBox()
 
@@ -1712,6 +1763,7 @@ Func FileScan_Peid($sType, $analyze = 1)
 
 	_FiletypeAdd("PEiD (" & $sType & ")", $sFileType)
 	Cout($sFileType)
+	_PipelineStep("DETECTOR", "PEiD (" & $sType & ")", _PipelineDetectorStatus($sFileType, Not StringIsSpace($sFileType)), _PipelineCompactDetails($sFileType))
 
 	; Restore previous PEiD options
 	If $bHasRegKey Then
@@ -2491,6 +2543,11 @@ Func _IsStrongPrimaryDetectorHit($sText)
 	If StringInStr($s, "pyinstaller") Then Return True
 	If StringInStr($s, "enigma virtual box") Then Return True
 
+	; DiE often reports Atlantis-style custom installers only as Delphi/VCL/compiler
+	; hints. If the PE contains the FILES resource, keep DiE as the strong
+	; primary detector instead of falling through to Exeinfo PE.
+	If (StringInStr($s, "delphi") Or StringInStr($s, "vcl") Or StringInStr($s, "turbo linker")) And _HasAtlantisFilesResource() Then Return True
+
 	Return False
 EndFunc
 
@@ -2629,8 +2686,9 @@ Func CheckAlz($returnSuccess = False, $returnFail = False)
 	Local $return = FetchStdout($alz & ' -l "' & $file & '"', $filedir, @SW_HIDE)
 
 	_DeleteTrayMessageBox()
-	If StringInStr($return, "Listing archive:") And Not (StringInStr($return, "corrupted file") _
-	Or StringInStr($return, "file open error")) Then Return extract($TYPE_ALZ, -1, "", $returnSuccess, $returnFail)
+	; unalz can print "It's corrupted file." even when it still produces a usable listing.
+	; Treat a real file listing as a valid ALZ probe, but still reject open/read failures.
+	If StringInStr($return, "Listing archive:") And StringInStr($return, "Total") And Not StringInStr($return, "file open error") Then Return extract($TYPE_ALZ, -1, "", $returnSuccess, $returnFail)
 
 	Return False
 EndFunc
@@ -3345,6 +3403,32 @@ Func _SanitizeAtlantisEmbeddedPath($sPath)
 EndFunc
 
 ; If detection fails, try to determine file type by extension
+Func _ShouldSkipBroadGameProbeForInstaller()
+	Local $s = StringLower($g_sPrimaryDetectMatch & @CRLF & $g_sStoredTridType & @CRLF & $g_sStoredUnixType)
+	If StringIsSpace($s) Then Return False
+
+	If StringInStr($s, "inno setup") Then Return True
+	If StringInStr($s, "nullsoft") Or StringInStr($s, "nsis") Then Return True
+	If StringInStr($s, "installshield") Then Return True
+	If StringInStr($s, "microsoft installer") Or StringInStr($s, "windows installer") Then Return True
+	If StringInStr($s, "msi") And StringInStr($s, "installer") Then Return True
+	If StringInStr($s, "wix toolset installer") Or StringInStr($s, "wix installer") Then Return True
+	If StringInStr($s, "advanced installer") Then Return True
+	If StringInStr($s, "installaware") Then Return True
+	If StringInStr($s, "setup factory") Then Return True
+	If StringInStr($s, "installer vise") Or StringInStr($s, "installer: vise") Or StringInStr($s, "installer - vise") Or StringInStr($s, "vise mindvision") Or StringInStr($s, "vise32ex.dll") Then Return True
+	If StringInStr($s, "gentee installer") Then Return True
+	If StringInStr($s, "install4j") Then Return True
+	If StringInStr($s, "wise installer") Then Return True
+	If StringInStr($s, "squirrel") Then Return True
+	If StringInStr($s, "createinstall") Then Return True
+	If StringInStr($s, "excelsior installer") Then Return True
+	If StringInStr($s, "ghost installer studio") Then Return True
+	If StringInStr($s, "install creator") Or StringInStr($s, "installscript setup launcher") Then Return True
+
+	Return False
+EndFunc
+
 Func _ShouldSkipNonFatalProbesForPrimaryMatch()
 	If $g_sPrimaryDetectMatch = "" Then Return False
 
@@ -3571,6 +3655,21 @@ Func _TryExtCheckAlz()
 	Return False
 EndFunc
 
+Func _TryExtExtractEcm()
+	; Prefer unecm for .ecm files when available, but keep the existing generic
+	; detector/7-Zip/QuickBMS fallback path if unecm is missing or non-fatally fails.
+	If extract($TYPE_ECM, 'ECM ' & t('TERM_FILE'), '', True, True) Then terminate($STATUS_SUCCESS, $filenamefull, $TYPE_ECM, 'ECM ' & t('TERM_FILE'))
+	If $g_bPasswordFailureAbort Then
+		Cout("Password failure detected during ECM attempt; stopping further fallback retries")
+		terminate($STATUS_PASSWORD, $file, $TYPE_ECM, 'ECM ' & t('TERM_FILE'))
+	EndIf
+	If $g_bArchiveIntegrityError Then
+		Cout("Definitive archive corruption/broken-volume failure detected during ECM attempt; stopping further fallback retries")
+		terminate($STATUS_FAILED, $file, $TYPE_ECM, 'ECM ' & t('TERM_FILE'))
+	EndIf
+	Return False
+EndFunc
+
 ; Perform special actions for some file types
 Func InitialCheckExt()
 	If Not $extract Then Return
@@ -3585,6 +3684,9 @@ Func InitialCheckExt()
 			_TryExtExtract($TYPE_CTAR, 'Compressed Tar ' & t('TERM_ARCHIVE'))
 
 		; Disk images - file type identification is not always reliable
+		Case "ecm"
+			_TryExtExtractEcm()
+
 		Case "bin"
 			; Try generic archive handling before ISO/WCX probing.
 			; This avoids sending ZIP/RAR/7z content in .bin files through QuickBMS first.
@@ -3900,6 +4002,10 @@ Func extract($arctype, $arcdisp = 0, $additionalParameters = "", $returnSuccess 
 			ProcessWait($filenamefull, $Timeout)
 			ProcessWaitClose($filenamefull, $Timeout)
 
+		Case $TYPE_ALZ
+			If Not HasPlugin($alz, $returnFail) Then Return
+			_Run($alz & ' -d "' & $outdir & '" "' & $file & '"', $outdir, @SW_HIDE, True, True, True, True)
+
 		Case $TYPE_ARC_CONV
 			If Not HasPlugin($arc_conv, $returnFail) Then Return
 
@@ -4039,6 +4145,11 @@ Func extract($arctype, $arcdisp = 0, $additionalParameters = "", $returnSuccess 
 		Case $TYPE_DCP
 			HasPlugin($dcp)
 			_Run($dcp & ' "' & $file & '"', $outdir)
+
+		Case $TYPE_ECM
+			LogExtractorWinner("unecm")
+			If Not HasPlugin($unecm, $returnFail) Then Return False
+			_Run($unecm & ' "' & $file & '" "' & $outdir & '\' & $filename & '"', $outdir, @SW_HIDE, True, True, False)
 
 		Case $TYPE_EI
 			Warn_Execute($file & ' /batch /no-reg /no-postinstall /dest "' & $outdir & '"')
@@ -5010,6 +5121,8 @@ Func extract($arctype, $arcdisp = 0, $additionalParameters = "", $returnSuccess 
 		Cout("No explicit tool success marker was found, but usable output exists")
 		$success = $RESULT_SUCCESS
 	EndIf
+
+	If $success = $RESULT_SUCCESS And $arctype = $TYPE_ALZ And $g_sExtractorWinner = "" Then LogExtractorWinner("unalz")
 	Cout("Extraction evaluated result: " & _ResultToText($success) & " (" & $success & ")")
 	
 	If $returnSuccess Then
@@ -5709,15 +5822,213 @@ Func _NormalizeOneLine($sText)
 	Return StringStripWS($sText, 3)
 EndFunc
 
+Func _PipelineHtmlEscape($sText)
+	$sText = String($sText)
+	$sText = StringReplace($sText, "&", "&amp;")
+	$sText = StringReplace($sText, "<", "&lt;")
+	$sText = StringReplace($sText, ">", "&gt;")
+	$sText = StringReplace($sText, '"', "&quot;")
+	Return $sText
+EndFunc
+
+Func _PipelineStatusClass($sStatus)
+	Local $s = StringLower(_NormalizeOneLine($sStatus))
+	If $s = "success" Or $s = "ok" Then Return "ok"
+	If $s = "failed" Or $s = "fail" Or $s = "password" Or $s = "corrupted" Or $s = "canceled" Or $s = "nofreespace" Then Return "fail"
+	If $s = "warn" Or $s = "warning" Or $s = "partial" Or $s = "run" Or $s = "unknown" Then Return "warn"
+	If $s = "skipped" Then Return "info"
+	Return "info"
+EndFunc
+
+Func _PipelineCommandExePath($sCommand)
+	Local $aExe = StringRegExp($sCommand, '"([^"|<>]+\.exe)"', 3)
+	If Not IsArray($aExe) Then $aExe = StringRegExp($sCommand, '([^\s"|<>]+\.exe)', 3)
+	If IsArray($aExe) Then
+		For $i = 0 To UBound($aExe) - 1
+			Local $sExe = StringReplace($aExe[$i], "/", "\")
+			Local $sBase = $sExe
+			Local $iPos = StringInStr($sBase, "\", 0, -1)
+			If $iPos > 0 Then $sBase = StringTrimLeft($sBase, $iPos)
+			If StringLower($sBase) = "cmd.exe" Or StringLower($sBase) = "tee.exe" Then ContinueLoop
+			If FileExists($sExe) Then Return $sExe
+			If FileExists($bindir & $sExe) Then Return $bindir & $sExe
+			If FileExists($bindir & $sBase) Then Return $bindir & $sBase
+			Return $sExe
+		Next
+	EndIf
+	Return ""
+EndFunc
+
+Func _PipelineCommandTool($sCommand)
+	Local $sExe = _PipelineCommandExePath($sCommand)
+	If $sExe <> "" Then
+		Local $iPos = StringInStr($sExe, "\", 0, -1)
+		If $iPos > 0 Then Return StringTrimLeft($sExe, $iPos)
+		Return $sExe
+	EndIf
+	Return "Command"
+EndFunc
+
+Func _PipelineCommandVersion($sCommand)
+	Local $sExe = _PipelineCommandExePath($sCommand)
+	If $sExe = "" Or Not FileExists($sExe) Then Return ""
+	Local $sVersion = FileGetVersion($sExe)
+	If @error Or $sVersion = "" Then Return ""
+	Return $sVersion
+EndFunc
+
+Func _PipelineFileUrl($sPath)
+	$sPath = StringStripWS($sPath, 3)
+	$sPath = StringReplace($sPath, "\", "/")
+	While StringRight($sPath, 1) = "/"
+		$sPath = StringTrimRight($sPath, 1)
+	WEnd
+	$sPath = StringReplace($sPath, "%", "%25")
+	$sPath = StringReplace($sPath, " ", "%20")
+	$sPath = StringReplace($sPath, "#", "%23")
+	$sPath = StringReplace($sPath, "?", "%3F")
+	$sPath = StringReplace($sPath, "&", "%26")
+	$sPath = StringReplace($sPath, "'", "%27")
+	$sPath = StringReplace($sPath, '"', "%22")
+	$sPath = StringReplace($sPath, "[", "%5B")
+	$sPath = StringReplace($sPath, "]", "%5D")
+	Return "file://localhost/" & $sPath
+EndFunc
+
+Func _PipelineAddToolVersion($sTool, $sVersion)
+	$sTool = _NormalizeOneLine($sTool)
+	$sVersion = _NormalizeOneLine($sVersion)
+	If $sTool = "" Or $sVersion = "" Then Return
+	Local $sKey = "|" & $sTool & "|"
+	If StringInStr($g_sPipelineToolVersions, $sKey, 1) Then Return
+	$g_sPipelineToolVersions &= $sKey & $sVersion & @CRLF
+EndFunc
+
+Func _PipelineToolVersionsHtml()
+	If StringStripWS($g_sPipelineToolVersions, 3) = "" Then Return '<div class="empty">No external tool versions captured.</div>'
+	Local $sHtml = '<table class="tooltable"><tr><th>Tool</th><th>Version</th></tr>'
+	Local $aLines = StringSplit(StringStripWS($g_sPipelineToolVersions, 3), @CRLF, $STR_NOCOUNT)
+	If IsArray($aLines) Then
+		For $i = 0 To UBound($aLines) - 1
+			Local $aParts = StringSplit($aLines[$i], "|", $STR_NOCOUNT)
+			If IsArray($aParts) And UBound($aParts) >= 3 Then $sHtml &= '<tr><td>' & _PipelineHtmlEscape($aParts[1]) & '</td><td>' & _PipelineHtmlEscape($aParts[2]) & '</td></tr>'
+		Next
+	EndIf
+	Return $sHtml & '</table>'
+EndFunc
+
+Func _PipelineFinalBadgeText($sFinalStatus)
+	If $g_iPipelineFail > 0 Then Return "FAILED"
+	If $g_iPipelineWarn > 0 Then Return "SUCCESS WITH WARNINGS"
+	If StringLower($sFinalStatus) = "unknown" Then Return "UNSUPPORTED / UNKNOWN"
+	Return "FULL SUCCESS"
+EndFunc
+
+Func _PipelineSummaryHtml($sLogPath, $sFinalStatus)
+	Local $sBadge = _PipelineFinalBadgeText($sFinalStatus)
+	Local $sBadgeClass = _PipelineStatusClass(($g_iPipelineFail > 0 ? "FAIL" : ($g_iPipelineWarn > 0 ? "WARN" : "OK")))
+	Local $sOutputLink = ""
+	If $outdir <> "" Then $sOutputLink = '<a class="outputpath" href="' & _PipelineHtmlEscape(_PipelineFileUrl($outdir)) & '">' & _PipelineHtmlEscape($outdir) & '</a>'
+	If $sOutputLink = "" Then $sOutputLink = '<span class="muted">not available</span>'
+	Local $sDetect = ($g_sDetectionWinner <> "" ? $g_sDetectionWinner & ($g_sDetectedTypeForSummary <> "" ? " → " & $g_sDetectedTypeForSummary : "") : "not captured")
+	Local $sExtractor = ($g_sExtractorWinner <> "" ? $g_sExtractorWinner : $sFinalStatus)
+	Local $sLine = (StringStripWS($g_sPipelineLine, 3) <> "" ? StringTrimRight($g_sPipelineLine, 3) : "not captured")
+	Local $sHtml = '<div class="summary"><div class="finalbadge ' & $sBadgeClass & '">' & _PipelineHtmlEscape($sBadge) & '</div>'
+	$sHtml &= '<div class="summarygrid">'
+	$sHtml &= '<div><b>Detector winner</b><br>' & _PipelineHtmlEscape($sDetect) & '</div>'
+	$sHtml &= '<div><b>Extractor winner</b><br>' & _PipelineHtmlEscape($sExtractor) & '</div>'
+	$sHtml &= '<div><b>Warnings</b><br>' & $g_iPipelineWarn & '</div>'
+	$sHtml &= '<div><b>Failures</b><br>' & $g_iPipelineFail & '</div>'
+	$sHtml &= '<div><b>Commands</b><br>' & $g_iPipelineRun & '</div>'
+	$sHtml &= '<div><b>Output folder</b><br>' & $sOutputLink & '</div>'
+	$sHtml &= '</div><div class="pipeline"><b>Pipeline:</b> ' & _PipelineHtmlEscape($sLine) & '</div></div>'
+	Return $sHtml
+EndFunc
+
+Func _PipelineTimelineHtml()
+	If StringStripWS($g_sPipelineTimeline, 3) = "" Then Return ""
+	Return '<details class="panel"><summary>Timeline</summary><pre>' & _PipelineHtmlEscape(StringStripWS($g_sPipelineTimeline, 3)) & '</pre></details>'
+EndFunc
+
+Func _PipelineStep($sPhase, $sTool, $sStatus = "INFO", $sDetails = "", $sCommand = "", $sOutput = "")
+	$g_iPipelineSeq += 1
+	Local $sNormPhase = _NormalizeOneLine($sPhase)
+	Local $sNormTool = _NormalizeOneLine($sTool)
+	Local $sNormStatus = _NormalizeOneLine($sStatus)
+	Local $sClass = _PipelineStatusClass($sStatus)
+	Local $sSummary = "#" & $g_iPipelineSeq & " [" & $sNormPhase & "] " & $sNormTool & " — " & $sNormStatus
+	Local $sCmdId = "cmd" & $g_iPipelineSeq
+	Local $sOutId = "out" & $g_iPipelineSeq
+
+	Switch StringUpper($sNormStatus)
+		Case "OK", "SUCCESS"
+			$g_iPipelineOk += 1
+		Case "WARN", "WARNING", "PARTIAL"
+			$g_iPipelineWarn += 1
+		Case "FAIL", "FAILED", "CANCELED", "NOFREESPACE", "PASSWORD", "CORRUPTED"
+			$g_iPipelineFail += 1
+		Case "RUN"
+			$g_iPipelineRun += 1
+	EndSwitch
+
+	If $sNormPhase <> "COMMAND" Then $g_sPipelineTimeline &= GetDateTime() & "  " & $sNormPhase & "  " & $sNormTool & "  " & $sNormStatus & @CRLF
+	If $sNormPhase = "DETECTOR" Or $sNormPhase = "DETECTION" Or $sNormPhase = "EXTRACTOR" Or $sNormPhase = "OUTPUT" Or $sNormPhase = "FINAL" Then $g_sPipelineLine &= $sNormTool & ":" & $sNormStatus & " → "
+
+	If $sCommand <> "" Then _PipelineAddToolVersion(_PipelineCommandTool($sCommand), _PipelineCommandVersion($sCommand))
+
+	Local $sRow = '<details class="step ' & $sClass & '"><summary><span class="badge ' & $sClass & '">' & _PipelineHtmlEscape($sStatus) & '</span> ' & _PipelineHtmlEscape($sSummary) & '</summary>' & @CRLF
+	If $sDetails <> "" Then $sRow &= '<div class="label">Details</div><pre>' & _PipelineHtmlEscape($sDetails) & '</pre>' & @CRLF
+	If $sCommand <> "" Then $sRow &= '<div class="label">Command line <button class="copy" onclick="copyText(' & "'" & $sCmdId & "'" & ')">Copy command</button></div><pre id="' & $sCmdId & '">' & _PipelineHtmlEscape($sCommand) & '</pre>' & @CRLF
+	If $sOutput <> "" Then $sRow &= '<div class="label">Tool output</div><pre id="' & $sOutId & '">' & _PipelineHtmlEscape($sOutput) & '</pre>' & @CRLF
+	$sRow &= '</details>' & @CRLF
+	$g_sPipelineRows &= $sRow
+	Return $g_iPipelineSeq
+EndFunc
+
+Func _PipelineDetectorStatus($sText, $bStrong = True)
+	If StringIsSpace($sText) Then Return "UNKNOWN"
+	If Not $bStrong Then Return "WARN"
+	Return "OK"
+EndFunc
+
+Func _PipelineCompactDetails($sText, $iMax = 900)
+	$sText = StringStripWS(String($sText), 3)
+	If StringLen($sText) > $iMax Then $sText = StringLeft($sText, $iMax) & @CRLF & "... [trimmed; see normal log for full output]"
+	Return $sText
+EndFunc
+
+Func _PipelineWriteReport($sLogPath, $sFinalStatus)
+	If $g_sPipelineRows = "" Then Return ""
+	Local $sReport = StringTrimRight($sLogPath, 4) & "_pipeline.html"
+	Local $sInput = ($filenamefull <> "" ? $filenamefull : $file)
+	Local $sCss = '<style>body{font-family:Segoe UI,Arial,sans-serif;background:#f6f7f9;color:#111;margin:18px;font-size:13px}.card{max-width:1200px;margin:auto;background:white;border:1px solid #ddd;border-radius:10px;padding:16px;box-shadow:0 2px 10px #0001}h1{margin:0 0 6px;font-size:22px}.meta{color:#555;margin-bottom:14px;font-size:12px}.summary{border:1px solid #ddd;background:#fbfbfc;border-radius:10px;padding:10px;margin:10px 0 14px}.summarygrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:8px}.finalbadge{display:inline-block;border-radius:999px;padding:4px 10px;color:white;font-weight:700;margin-bottom:8px;font-size:12px}.finalbadge.ok{background:#198754}.finalbadge.warn{background:#b58100}.finalbadge.fail{background:#dc3545}.finalbadge.info{background:#0d6efd}.pipeline{margin-top:8px;color:#333;font-size:12px}.panel{border:1px solid #ddd;background:#fafafa;border-radius:8px;padding:6px 10px;margin:8px 0}.step{border-left:5px solid #999;background:#fafafa;margin:8px 0;padding:6px 10px;border-radius:8px}.step.ok{border-left-color:#198754}.step.fail{border-left-color:#dc3545}.step.warn{border-left-color:#ffc107}.step.info{border-left-color:#0d6efd}summary{cursor:pointer;font-weight:600;font-size:13px}.badge{display:inline-block;border-radius:999px;padding:1px 7px;color:white;font-size:11px}.badge.ok{background:#198754}.badge.fail{background:#dc3545}.badge.warn{background:#b58100}.badge.info{background:#0d6efd}.label{font-size:11px;color:#555;text-transform:uppercase;margin:6px 0 3px}pre{white-space:pre-wrap;word-break:break-word;background:#111;color:#eee;padding:7px;border-radius:7px;max-height:200px;overflow:auto;font-size:12px}.copy{float:right;border:1px solid #bbb;background:#fff;border-radius:6px;padding:1px 7px;cursor:pointer;font-size:12px}.tooltable{border-collapse:collapse;width:100%;margin-top:8px}.tooltable th,.tooltable td{border-bottom:1px solid #ddd;text-align:left;padding:4px 6px;font-size:12px}.outputpath{display:block;max-width:100%;white-space:normal;overflow-wrap:anywhere;word-break:break-word;font-family:Consolas,monospace;font-size:12px;line-height:1.25}.muted,.empty{color:#666}</style>'
+	Local $sJs = '<script>function copyText(id){var e=document.getElementById(id);if(!e)return;navigator.clipboard.writeText(e.innerText||e.textContent);}</script>'
+	Local $sHtml = '<!doctype html><html><head><meta charset="utf-8"><title>UniExtract Pipeline Report</title>' & $sCss & $sJs & '</head><body><div class="card">' & @CRLF
+	$sHtml &= '<h1>UniExtract Pipeline Report</h1>' & @CRLF
+	$sHtml &= '<div class="meta"><b>Input:</b> ' & _PipelineHtmlEscape($sInput) & '<br><b>Final status:</b> ' & _PipelineHtmlEscape($sFinalStatus) & '<br><b>Created:</b> ' & GetDateTime() & '<br><b>Log:</b> ' & _PipelineHtmlEscape($sLogPath) & '</div>' & @CRLF
+	$sHtml &= _PipelineSummaryHtml($sLogPath, $sFinalStatus) & @CRLF
+	$sHtml &= '<details class="panel"><summary>Tool versions</summary>' & _PipelineToolVersionsHtml() & '</details>' & @CRLF
+	$sHtml &= _PipelineTimelineHtml() & @CRLF
+	$sHtml &= $g_sPipelineRows & '</div></body></html>'
+	Local $hFile = FileOpen($sReport, $FO_UTF8 + $FO_CREATEPATH + $FO_OVERWRITE)
+	If $hFile = -1 Then Return SetError(1, 0, "")
+	FileWrite($hFile, $sHtml)
+	FileClose($hFile)
+	Cout("Pipeline report: " & $sReport)
+	Return $sReport
+EndFunc
+
 Func LogDetectionWinner($sTool, $sType)
 	$g_sDetectionWinner = _NormalizeOneLine($sTool)
 	$g_sDetectedTypeForSummary = _NormalizeOneLine($sType)
 	Cout("DETECTION WINNER: " & $g_sDetectionWinner & " -> " & $g_sDetectedTypeForSummary)
+	_PipelineStep("DETECTION", $g_sDetectionWinner, "OK", $g_sDetectedTypeForSummary)
 EndFunc
 
 Func LogExtractorWinner($sTool)
 	$g_sExtractorWinner = _NormalizeOneLine($sTool)
 	Cout("EXTRACTOR WINNER: " & $g_sExtractorWinner)
+	_PipelineStep("EXTRACTOR", $g_sExtractorWinner, "OK", "Marked as extractor winner")
 EndFunc
 
 Func LogPerFileSummary($sFinalStatus, $sArcDisp = "")
@@ -5777,6 +6088,10 @@ Func LogPerFileSummary($sFinalStatus, $sArcDisp = "")
 					$sDetect = "TAR archive"
 				Case "iso"
 					$sDetect = "ISO image"
+				Case "alz"
+					$sDetect = "ALZ archive"
+				Case "ecm"
+					$sDetect = "ECM file"
 			EndSwitch
 		EndIf
 	EndIf
@@ -5820,6 +6135,10 @@ Func LogPerFileSummary($sFinalStatus, $sArcDisp = "")
 				$sDetect = "TAR archive"
 			Case "iso"
 				$sDetect = "ISO image"
+			Case "alz"
+				$sDetect = "ALZ archive"
+			Case "ecm"
+				$sDetect = "ECM file"
 			Case Else
 				$sDetect = "unknown"
 		EndSwitch
@@ -5837,6 +6156,10 @@ Func LogPerFileSummary($sFinalStatus, $sArcDisp = "")
 			$sExtractor = "innounp/innoextract"
 		ElseIf StringInStr($sDisp, "msi") Then
 			$sExtractor = "lessmsi/7z/msiexec"
+		ElseIf $sTypeNorm = StringLower(String($TYPE_ALZ)) Or $sExt = "alz" Then
+			$sExtractor = "unalz"
+		ElseIf $sTypeNorm = StringLower(String($TYPE_ECM)) Or $sExt = "ecm" Then
+			$sExtractor = "unecm"
 		ElseIf $sTypeNorm = StringLower(String($TYPE_GARBRO)) Or $sExt = "xp3" Or $sExt = "arc" Or $sExt = "pck" Then
 			$sExtractor = "GARbro"
 		ElseIf $sTypeNorm = StringLower(String($TYPE_VIDEO)) Or $sTypeNorm = StringLower(String($TYPE_VIDEO_CONVERT)) _
@@ -7029,6 +7352,9 @@ Func SaveLog($status)
 	FileWrite($hFile, $sFullLog)
 	FileClose($hFile)
 
+	_PipelineStep("FINAL", "Result", StringUpper($status), "")
+	_PipelineWriteReport($sName, $status)
+
 	Return $sName
 EndFunc
 
@@ -7047,6 +7373,46 @@ Func _ResultToText($iResult)
 	EndSwitch
 
 	Return "result=" & $iResult
+EndFunc
+
+Func _PipelineOutputStatus($sLog)
+	; Report-only classification.  Do not alter $success or extraction/fallback logic.
+	Switch $success
+		Case $RESULT_SUCCESS
+			Return "OK"
+		Case $RESULT_FAILED
+			Return "FAIL"
+		Case $RESULT_CANCELED
+			Return "CANCELED"
+		Case $RESULT_NOFREESPACE
+			Return "NOFREESPACE"
+	EndSwitch
+
+	If StringInStr($sLog, "Sub items Errors", 1) Or StringInStr($sLog, "Archives with Errors", 1) Then Return "WARN"
+	Return "UNKNOWN"
+EndFunc
+
+
+Func _PipelineOutputDetails($sLog)
+	; Keep the HTML report extractor-neutral.
+	; Full stdout/stderr is already included in the OUTPUT section.
+	Return ""
+EndFunc
+
+Func _PipelineAppendDetail(ByRef $sDetails, $sLine)
+	$sLine = StringStripWS(String($sLine), 3)
+	If $sLine = "" Then Return
+	If StringInStr(@CRLF & $sDetails & @CRLF, @CRLF & $sLine & @CRLF, 1) Then Return
+	$sDetails &= ($sDetails <> "" ? @CRLF : "") & $sLine
+EndFunc
+
+Func _PipelineFindLine($sText, $sNeedle)
+	Local $aLines = StringSplit(StringReplace($sText, @CRLF, @LF), @LF, $STR_NOCOUNT)
+	If Not IsArray($aLines) Then Return ""
+	For $i = 0 To UBound($aLines) - 1
+		If StringInStr($aLines[$i], $sNeedle, 1) Then Return $aLines[$i]
+	Next
+	Return ""
 EndFunc
 
 Func _IsSymlinkOnlyArchiveWarning($sLog)
@@ -7245,6 +7611,7 @@ Func _Run($f, $sWorkingDir = $outdir, $show_flag = @SW_MINIMIZE, $bUseCmd = True
 
 	Cout("Executing: " & $f)
 	Cout("           with options: showFlag = " & $show_flag & ", initialShow = " & $bInitialShow & ", patternSearch = " & $bPatternSearch & ", workingdir = " & $sWorkingDir)
+	_PipelineStep("COMMAND", _PipelineCommandTool($f), "RUN", "workingdir = " & $sWorkingDir & (_PipelineCommandVersion($f) <> "" ? @CRLF & "tool version = " & _PipelineCommandVersion($f) : ""), $f)
 
 	; Create log
 	If $bUseTee Then
@@ -7346,6 +7713,7 @@ Func _Run($f, $sWorkingDir = $outdir, $show_flag = @SW_MINIMIZE, $bUseCmd = True
 		FileDelete($LogFile)
 
 		EvaluateLog($return)
+		_PipelineStep("OUTPUT", _PipelineCommandTool($f), _PipelineOutputStatus($return), _PipelineOutputDetails($return), $f, $return)
 			Local $iEvalError = @error, $iEvalExtended = @extended
 			If $g_bPasswordFailureAbort Then
 				SetError(1, 1)
@@ -7385,6 +7753,7 @@ Func _Run($f, $sWorkingDir = $outdir, $show_flag = @SW_MINIMIZE, $bUseCmd = True
 			EndIf
 			Sleep(100)
 		WEnd
+		_PipelineStep("OUTPUT", _PipelineCommandTool($f), _PipelineOutputStatus(""), "runtime logging disabled", $f)
 	EndIf
 
 	; Reset run var so no wrong process is closed on tray exit
@@ -7468,16 +7837,24 @@ Func FetchStdout($f, $sWorkingDir, $show_flag = @SW_HIDE, $iLine = 0, $bOutput =
 
 	$runtitle = _WinGetByPID($run)
 	Local $TimerStart = TimerInit()
+	Local $bTimedOut = False
 
 	Do
 		Sleep(1)
-		If TimerDiff($TimerStart) > ($Timeout * 1000) Then ExitLoop
+		If TimerDiff($TimerStart) > $Timeout Then
+			$bTimedOut = True
+			ExitLoop
+		EndIf
 		$return &= StdoutRead($run)
 	Until @error
 
 	If $bOutput Then Cout($return)
-	If ProcessExists($run) Then ProcessClose($run)
-	$run = 0
+	If ProcessExists($run) Then
+		If $bTimedOut And $bOutput Then Cout("FetchStdout timeout; killing helper process tree " & $run)
+		KillHelper()
+	Else
+		$run = 0
+	EndIf
 
 	If $iLine <> 0 Then Return _StringGetLine($return, $iLine)
 	Return $return
@@ -7714,23 +8091,31 @@ Func _FiletypeGet($bHeader = True, $iWidth = 50)
 	Return $return
 EndFunc
 
+; Kill a helper process together with any child process it started through cmd.exe
+Func _KillProcessTree($iPid)
+	If Not $iPid Then Return
+
+	; taskkill /T is important here: UniExtract often starts helpers through cmd.exe,
+	; and killing only cmd.exe can leave the real extractor (for example quickbms.exe)
+	; alive with the input/temp file still locked.
+	RunWait(@ComSpec & ' /d /c taskkill /PID ' & Int($iPid) & ' /T /F >nul 2>&1', "", @SW_HIDE)
+	Sleep(200)
+
+	; Last-resort fallback for the parent process only. Children should already be gone
+	; because of /T above.
+	If ProcessExists($iPid) Then ProcessClose($iPid)
+EndFunc
+
 ; Stop running helper process
 Func KillHelper()
 	If Not $run Then Return
-	Cout("Killing helper process " & $run)
-	StdioClose($run)
+	Local $iRun = $run
+	Cout("Killing helper process tree " & $iRun)
+	StdioClose($iRun)
 
-	If Not @error And Not StringIsSpace($runtitle) Then
-		Cout("Runtitle: " & $runtitle)
-		; Send SIGINT to console to terminate child processes
-		WinActivate($runtitle)
-		If WinActive($runtitle) Then Send("^c")
-		; Close console
-		WinClose($runtitle)
-	EndIf
-
-	; Force termination if other close commands failed
-	If ProcessExists($run) Then ProcessClose($run)
+	If Not @error And Not StringIsSpace($runtitle) Then Cout("Runtitle: " & $runtitle)
+	_KillProcessTree($iRun)
+	$run = 0
 EndFunc
 
 ; Restart Universal Extractor
@@ -8117,7 +8502,6 @@ Func _AfterUpdate()
 	FileDelete($bindir & "regexp.ndll")
 	FileDelete($bindir & "lime.ndll")
 	FileDelete($bindir & "dbxplug.wcx")
-	FileDelete($bindir & "unecm.exe")
 
 	FileDelete($defdir & "flv.ini")
 	FileDelete($defdir & "ns2.ini")
