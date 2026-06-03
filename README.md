@@ -25,7 +25,7 @@ See the [changelog](docs/changelog.txt) for a complete log of all improvements.
 
 ## Download
 
-Get the latest version [here](https://github.com/gvp9000/UniExtract2/releases/download/v2.0.0.1_RC5/UniExtractRC5.zip)
+Get the latest version [here](https://github.com/gvp9000/UniExtract2/releases)
 
 ###### Virus alert?
 
