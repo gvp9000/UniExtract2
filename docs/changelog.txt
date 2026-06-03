@@ -1,3 +1,38 @@
+v3.0.2
+Added bitrock-unpacker.exe
+Added sfextract.exe
+Added unecm.exe
+Updated sqlite3 to 3.53.1
+Updated Exeinfope to 0.0.9.7
+Updated Ext_Detector.dll to 0.7.8.3
+Updated triddefs.trd to 20260602
+Updated pea.exe to 1.3.1.0
+Updated DiE database files to 20260603
+ECM extraction support
+Better ALZ handling
+Game/QuickBMS checks moved later to avoid wrong extraction/hangs
+Stronger process killing
+Timeout fix
+Better Atlantis installer detection
+New detailed HTML pipeline report
+
+v2.9.6
+Updated 7z.exe, 7z.dll to 26.01.
+Updated UnRAR.exe to 7.22.
+Updated innounp.exe to 2.67.9.
+Updated trid.exe to 2.48.
+Updated triddefs.trd to 20260505
+Updated DiE database files to 20260430
+Improved Setup Factory / VISE / Gentee handling.
+Improved EXE extraction pipeline.
+PEiD fallback is now deferred instead of running too early.
+Removed generic CheckExt() from the EXE flow.
+Fixed several incorrect $TYPE_* mappings.
+NSIS and RAR SFX now use the generic 7-Zip path.
+Improved TrID fallback with multiple matches.
+Cleaner unsupported EXE status/logging.
+Overall: safer routing and fewer false positives.
+
 v2.9.3
 Updated sqlite3.dll, sqlite3_x64.dll and sqlite3.exe to 3.53.0.
 Updated DiE database files to 20260427.
