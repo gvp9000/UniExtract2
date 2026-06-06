@@ -1,0 +1,8 @@
+v3.0.2
+ECM extraction support
+Better ALZ handling
+New detailed HTML pipeline report
+Game/QuickBMS checks moved later to avoid wrong extraction/hangs
+Stronger process killing
+Timeout fix
+Better Atlantis installer detection
