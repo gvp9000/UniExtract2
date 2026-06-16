@@ -1,4 +1,0 @@
-v3.0.3
-- Added file-type detection for JAR (ARJ Software) archives.
-Files detected as: JAR (ARJ Software archive data)
-are now routed to a custom extractor type named jar_arj.
