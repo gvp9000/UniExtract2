@@ -3,7 +3,7 @@
 #AutoIt3Wrapper_Outfile=.\UniExtract.exe
 #AutoIt3Wrapper_Res_Description=Universal Extractor
 #AutoIt3Wrapper_Res_ProductName=Universal Extractor
-#AutoIt3Wrapper_Res_Fileversion=3.0.2
+#AutoIt3Wrapper_Res_Fileversion=3.0.4
 #AutoIt3Wrapper_Res_ProductVersion=%fileversion%
 #AutoIt3Wrapper_Res_CompanyName=gvp9000
 #AutoIt3Wrapper_Res_Language=1033
@@ -279,6 +279,7 @@ Const $pdfdetach = "pdfdetach.exe"
 Const $pdftohtml = "pdftohtml.exe"
 Const $pdftopng = "pdftopng.exe"
 Const $pdftotext = "pdftotext.exe"
+Const $qpdf = "qpdf\bin\qpdf.exe"
 Const $peid = Quote($bindir & "peid.exe")
 Const $quickbms = Quote($bindir & "quickbms.exe", True)
 Const $rai = "RAIU.EXE"
@@ -1855,6 +1856,8 @@ Func filecompare($sFileType)
 	Select
 		Case StringInStr($sFileType, "7 zip archive data") Or StringInStr($sFileType, "7-zip archive data")
 			extract($TYPE_7Z, '7-Zip ' & t('TERM_ARCHIVE'))
+		Case StringInStr($sFileType, "JAR (ARJ Software", 0) Or StringInStr($sFileType, "ARJ Software, Inc.) archive data", 0)
+			extract("jar_arj", 'JAR (ARJ Software) ' & t('TERM_ARCHIVE'))
 		Case StringInStr($sFileType, "RAR archive data")
 			extract($TYPE_RAR, 'RAR ' & t('TERM_ARCHIVE'))
 		Case StringInStr($sFileType, "lzip compressed data")
@@ -4614,10 +4617,19 @@ Func extract($arctype, $arcdisp = 0, $additionalParameters = "", $returnSuccess 
 			CheckBin()
 
 		Case $TYPE_PDF
-			_Run($pdfdetach & ' -saveall "' & $file & '"', $outdir, @SW_HIDE, True, True, False, False)
-			_Run($pdftohtml & ' "' & $file & '" "' & $outdir & '\' & $filename & '-HTML"', $outdir, @SW_HIDE, True, True, False, False)
-			_Run($pdftopng & ' "' & $file & '" "' & $outdir & '\' & $filename & '-' & t('TERM_PAGE') & '"', $outdir, @SW_HIDE, True, True, False, False)
-			_Run($pdftotext & ' "' & $file & '" "' & $outdir & '\' & $filename & '.txt"', $outdir, @SW_HIDE, True, True, False, False)
+			Local $sPdfFile = _PdfDecryptWithQpdf($file, $tempoutdir)
+			Local $iPdfDecryptError = @error, $bPdfDecrypted = @extended
+			If Not $iPdfDecryptError Then
+				_Run($pdfdetach & ' -saveall "' & $sPdfFile & '"', $outdir, @SW_HIDE, True, True, False, False)
+				_Run($pdftohtml & ' "' & $sPdfFile & '" "' & $outdir & '\' & $filename & '-HTML"', $outdir, @SW_HIDE, True, True, False, False)
+				_Run($pdftopng & ' "' & $sPdfFile & '" "' & $outdir & '\' & $filename & '-' & t('TERM_PAGE') & '"', $outdir, @SW_HIDE, True, True, False, False)
+				_Run($pdftotext & ' "' & $sPdfFile & '" "' & $outdir & '\' & $filename & '.txt"', $outdir, @SW_HIDE, True, True, False, False)
+				If $bPdfDecrypted Then FileDelete($sPdfFile)
+			ElseIf $g_bPasswordFailureAbort Then
+				; A password-protected PDF can fail before any extractor command runs.
+				; Remove the PDF temp folder now; extract() terminates immediately on password abort.
+				If FileExists($tempoutdir) Then DirRemove($tempoutdir, 1)
+			EndIf
 
 		Case $TYPE_PEA
 			DirCreate($tempoutdir)
@@ -7592,6 +7604,123 @@ Func _FindArchivePassword($sIsProtectedCmd, $sTestCmd, $sIsProtectedText = "encr
 	EndIf
 
 	Return SetError(0, 0, $sPassword)
+EndFunc
+
+
+; Quote a command-line argument for direct CreateProcess/Run usage (no cmd.exe shell)
+Func _QuoteDirectArg($sString)
+	Return '"' & StringReplace($sString, '"', '\"') & '"'
+EndFunc
+
+; Try one PDF password with qpdf. The password is intentionally not written to the main log.
+Func _PdfTryQpdfPassword($sInputPdf, $sDecryptedPdf, $sPassword)
+	If FileExists($sDecryptedPdf) Then FileDelete($sDecryptedPdf)
+	FetchStdout($qpdf & ' --password=' & _QuoteDirectArg($sPassword) & ' --decrypt "' & $sInputPdf & '" "' & $sDecryptedPdf & '"', $outdir, @SW_HIDE, 0, False, False)
+	Return FileExists($sDecryptedPdf) And FileGetSize($sDecryptedPdf) > 0
+EndFunc
+
+; In non-silent mode, open a visible cmd window so the user can enter a PDF password manually.
+Func _PdfPromptPasswordWithCmd($sInputPdf, $sDecryptedPdf, $sTempDir)
+	Local $sQpdfPath = $bindir & $qpdf
+	Local $sPromptBat = $sTempDir & $filename & "_qpdf_password_prompt.cmd"
+	Local $sBatch = '@echo off' & @CRLF & _
+		'title UniExtract PDF password' & @CRLF & _
+		'echo Password-protected PDF detected.' & @CRLF & _
+		'echo File: "' & $sInputPdf & '"' & @CRLF & _
+		'echo.' & @CRLF & _
+		':retry' & @CRLF & _
+		'set "UEX_PDF_PASSWORD="' & @CRLF & _
+		'set /P "UEX_PDF_PASSWORD=Enter PDF password (leave empty to cancel): "' & @CRLF & _
+		'if not defined UEX_PDF_PASSWORD exit /b 1' & @CRLF & _
+		'if exist "' & $sDecryptedPdf & '" del /f /q "' & $sDecryptedPdf & '" >nul 2>nul' & @CRLF & _
+		'"' & $sQpdfPath & '" --password="%UEX_PDF_PASSWORD%" --decrypt "' & $sInputPdf & '" "' & $sDecryptedPdf & '"' & @CRLF & _
+		'if errorlevel 1 (' & @CRLF & _
+		'  echo.' & @CRLF & _
+		'  echo Wrong password or qpdf error. Try again, or press Enter without typing a password to cancel.' & @CRLF & _
+		'  echo.' & @CRLF & _
+		'  goto retry' & @CRLF & _
+		')' & @CRLF & _
+		'exit /b 0' & @CRLF
+
+	Local $hFile = FileOpen($sPromptBat, $FO_CREATEPATH + $FO_OVERWRITE)
+	If $hFile = -1 Then Return False
+	FileWrite($hFile, $sBatch)
+	FileClose($hFile)
+
+	Cout("Prompting for PDF password in cmd window")
+	Local $iExitCode = RunWait(@ComSpec & ' /d /c "' & $sPromptBat & '"', $outdir, @SW_SHOW)
+	FileDelete($sPromptBat)
+
+	Return $iExitCode = 0 And FileExists($sDecryptedPdf) And FileGetSize($sDecryptedPdf) > 0
+EndFunc
+
+; Decrypt password-protected PDFs with qpdf before running the existing Poppler PDF extractors.
+; Returns the original PDF path when no qpdf pre-processing is needed.
+; Returns a temporary decrypted PDF path with @extended = 1 when decryption succeeds.
+; Sets @error and $g_bPasswordFailureAbort when qpdf confirms that the PDF requires a password,
+; but no password from the password list or non-silent manual prompt can decrypt it.
+Func _PdfDecryptWithQpdf($sInputPdf, $sTempDir)
+	Local $sQpdfPath = $bindir & $qpdf
+	If Not FileExists($sQpdfPath) Then Return SetError(0, 0, $sInputPdf)
+
+	; qpdf returns 0 when the file requires a password, 2 when it does not.
+	Local $iRequiresPassword = RunWait(_MakeCommand($qpdf & ' --requires-password "' & $sInputPdf & '"', False), $outdir, @SW_HIDE)
+	If @error Then
+		Cout("qpdf PDF password check failed")
+		Return SetError(0, 0, $sInputPdf)
+	EndIf
+
+	If $iRequiresPassword = 2 Then Return SetError(0, 0, $sInputPdf)
+	If $iRequiresPassword <> 0 Then
+		Cout("qpdf could not determine PDF password state, exit code " & $iRequiresPassword)
+		Return SetError(0, 0, $sInputPdf)
+	EndIf
+
+	Cout("PDF is password protected")
+	_SetTrayMessageBoxText(t('SEARCHING_PASSWORD'))
+
+	DirCreate($sTempDir)
+	Local $sDecryptedPdf = $sTempDir & $filename & "_qpdf_decrypted.pdf"
+	If FileExists($sDecryptedPdf) Then FileDelete($sDecryptedPdf)
+
+	Local $aPasswords = FileReadToArray($sPasswordFile)
+	Local $iPasswordCount = @extended
+	If @error Then
+		Cout("Error reading password file " & $sPasswordFile)
+		$aPasswords = FileReadToArray(@ScriptDir & "\passwords.txt")
+		$iPasswordCount = @extended
+		If @error Then
+			$iPasswordCount = 0
+			Cout("No password list available for password-protected PDF")
+		EndIf
+	EndIf
+
+	If $iPasswordCount > 0 Then
+		Cout("Trying " & $iPasswordCount & " PDF passwords from password list")
+		For $i = 0 To $iPasswordCount - 1
+			_SetTrayMessageBoxText(t('TESTING_PASSWORD', CreateArray($i, $iPasswordCount)))
+			If _PdfTryQpdfPassword($sInputPdf, $sDecryptedPdf, $aPasswords[$i]) Then
+				_SetTrayMessageBoxText("")
+				Cout("PDF password found; using temporary qpdf-decrypted PDF")
+				Return SetError(0, 1, $sDecryptedPdf)
+			EndIf
+		Next
+	Else
+		Cout("Password list is empty for password-protected PDF")
+	EndIf
+
+	_SetTrayMessageBoxText("")
+	If Not $silentmode Then
+		If _PdfPromptPasswordWithCmd($sInputPdf, $sDecryptedPdf, $sTempDir) Then
+			Cout("PDF password accepted from cmd prompt; using temporary qpdf-decrypted PDF")
+			Return SetError(0, 1, $sDecryptedPdf)
+		EndIf
+		Cout("PDF password prompt canceled or no valid manual password was entered")
+	EndIf
+
+	Cout("No matching PDF password found")
+	$g_bPasswordFailureAbort = True
+	Return SetError(1, 1, $sInputPdf)
 EndFunc
 
 ; Execute a program and log output using tee
