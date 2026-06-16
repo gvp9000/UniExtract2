@@ -1,0 +1,11 @@
+v3.0.4
+Added password-protected PDF support with qpdf.
+Locked PDFs are decrypted first, then UniExtract continues the normal PDF extraction, such as extracting text, images/pages, attachments, and HTML output.
+Added automatic PDF password testing from password list.
+Added manual CMD password prompt in non-silent mode.
+Added cleanup for failed/temp PDF decrypt files.
+PDF passwords are not written to the main log.
+Added JAR / ARJ Software archive detection.
+Added defs\jar_arj.ini using JAR32.EXE x -y %file%.
+Updated BMS.db QuickBMS script for FreeSpace / FreeSpace 2 .vp archives.
+Reason for BMS.db update: old .vp script dumped folders/backdirs as 0-byte files; new script is directory-aware and rebuilds proper folder paths.
