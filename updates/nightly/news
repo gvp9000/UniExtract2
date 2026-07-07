@@ -1,0 +1,7 @@
+v3.0.5
+Fixes split Inno installers with Unicode paths
+Copies/renames missing Inno sidecar .bin files
+Cleans temporary Inno sidecar files
+Improves pipeline status detection
+Better detects OK, WARN, FAIL, PASSWORD, CANCELED
+Treats successful innounp extraction as OK
