@@ -3,7 +3,7 @@
 #AutoIt3Wrapper_Outfile=.\UniExtract.exe
 #AutoIt3Wrapper_Res_Description=Universal Extractor
 #AutoIt3Wrapper_Res_ProductName=Universal Extractor
-#AutoIt3Wrapper_Res_Fileversion=3.0.4
+#AutoIt3Wrapper_Res_Fileversion=3.0.6
 #AutoIt3Wrapper_Res_ProductVersion=%fileversion%
 #AutoIt3Wrapper_Res_CompanyName=gvp9000
 #AutoIt3Wrapper_Res_Language=1033
@@ -210,6 +210,7 @@ Global $g_sPipelineTimeline = "", $g_sPipelineLine = "", $g_sPipelineToolVersion
 Global $g_iPipelineWarn = 0, $g_iPipelineFail = 0, $g_iPipelineOk = 0, $g_iPipelineRun = 0
 Global $g_bStrictPipeline = True, $g_sStoredTridType = "", $g_sStoredUnixType = ""
 Global $oldpath, $oldoutdir, $sUnicodeName, $createdir
+Global $g_aUnicodeSidecarCopies[0]
 Global $guiprefs, $TBgui = 0, $exStyle = -1, $idTrayStatusExt, $BatchBut, $idProgress, $sComError = 0
 Global $Tray_Statusbox, $isexe = False, $Message, $run = 0, $runtitle, $idOptDeleteSourceFile[3]
 Global $gaDropFiles[1], $aFiletype[0][2], $queueArray[0], $aTridDefinitions[0][0], $aFileDefinitions[0][0], $aExeinfoDefinitions[0][0], $aGUIs[0], $aWarnings[0]
@@ -525,7 +526,10 @@ Func StartExtraction()
 	EndIf
 
 	; Else perform additional extraction methods
-	If _ShouldSkipNonFatalProbesForPrimaryMatch() Then
+	; Do not skip game probing when BMS.db has a format-specific script for this extension.
+	; This preserves the strict media fast-path while preventing false-positive media detection
+	; from bypassing a known game/archive extractor (for example Descent 3 .mn3/.hog).
+	If _ShouldSkipNonFatalProbesForPrimaryMatch() And Not _HasGameBmsForExtension($fileext) Then
 		Cout("Skipping non-fatal ISO/game probes because primary detector already identified media")
 	Else
 		CheckIso()
@@ -2758,28 +2762,37 @@ Func CheckGame($bUseGaup = True, $bUseGarbro = True)
 
 	$gamefailed = True
 
-	If $silentmode And Number($sMethodSelectOverride) < 1  Then
-		Cout("INFO: File may be extractable via BMS script, but user input is needed. Disable silent mode to try this method.")
+	; Check if a game-specific BMS script is available before deciding that silent mode
+	; needs user input. A unique extension match can be selected safely and automatically.
+	Local $hDB = OpenDB("BMS.db")
+	If Not $hDB Then
 		_DeleteTrayMessageBox()
 		Return False
 	EndIf
 
-	; Check if game specific bms script is available
-	Local $hDB = OpenDB("BMS.db")
 	Local $aReturn[0], $iRows, $iColumns
-
 	_SQLite_GetTable($hDB, "SELECT n.Name FROM Names n, Scripts s, Extensions e WHERE s.SID = e.EID AND s.SID = n.NID AND e.Extension= '" _
 						  & $fileext & "' ORDER BY n.Name", $aReturn, $iRows, $iColumns)
- 	_ArrayDelete($aReturn, 1)
+	_ArrayDelete($aReturn, 1) ; remove column header; element 0 remains the item count
 
 	If $aReturn[0] > 1 Then
 		_ArrayDelete($aReturn, 0)
 		_ArraySort($aReturn)
-		Local $iChoice = GUI_MethodSelectList($aReturn, t('METHOD_GAME_NOGAME'))
-		If $iChoice > -1 Then BmsExtract($iChoice, $hDB)
+
+		If $silentmode And Number($sMethodSelectOverride) < 1 Then
+			If UBound($aReturn) = 1 Then
+				Cout('Auto-selecting unique BMS script in silent mode: "' & $aReturn[0] & '"')
+				BmsExtract($aReturn[0], $hDB)
+			Else
+				Cout("INFO: Multiple BMS scripts match ." & $fileext & "; user input is required, so silent mode will not guess.")
+			EndIf
+		Else
+			Local $iChoice = GUI_MethodSelectList($aReturn, t('METHOD_GAME_NOGAME'))
+			If $iChoice > -1 Then BmsExtract($iChoice, $hDB)
+		EndIf
 	EndIf
 
-	_SQLite_Close()
+	_SQLite_Close($hDB)
 	_SQLite_Shutdown()
 
 	_DeleteTrayMessageBox()
@@ -3855,6 +3868,10 @@ Func MoveInputFileIfNecessary()
 	EndIf
 	Cout("Unicode file mode: " & $iUnicodeMode)
 
+	; Inno installers may depend on external sidecar data files such as setup-1.bin.
+	; When a Unicode path is copied/moved to an ASCII temp name, keep those files beside it too.
+	_CopyUnicodeInnoSidecars($filedir, $filename, $new)
+
 	$oldpath = $file
 	$sUnicodeName = $filename
 	$oldoutdir = $outdir
@@ -3864,6 +3881,57 @@ Func MoveInputFileIfNecessary()
 		Cout("Output directory seems to be unicode")
 		$outdir = $initoutdir
 	EndIf
+EndFunc
+
+; Copy external Inno Setup data files when Unicode path handling renames/moves the EXE.
+; Split Inno installers commonly need files like setup-1.bin beside setup.exe.
+Func _CopyUnicodeInnoSidecars($sOriginalDir, $sOriginalBase, $sNewPath)
+	If StringLower($fileext) <> "exe" Then Return
+	If StringIsSpace($sOriginalDir) Or StringIsSpace($sOriginalBase) Or StringIsSpace($sNewPath) Then Return
+
+	Local $iNewSlash = StringInStr($sNewPath, "\", 0, -1)
+	If Not $iNewSlash Then Return
+	Local $sNewDir = StringLeft($sNewPath, $iNewSlash - 1)
+	Local $sNewFull = StringTrimLeft($sNewPath, $iNewSlash)
+	Local $sNewBase = $sNewFull
+	Local $iNewDot = StringInStr($sNewFull, ".", 0, -1)
+	If $iNewDot Then $sNewBase = StringLeft($sNewFull, $iNewDot - 1)
+
+	Local $aPatterns[] = [$sOriginalBase & "-*.bin", "setup-*.bin"]
+	For $iPattern = 0 To UBound($aPatterns) - 1
+		Local $aBins = _FileListToArray($sOriginalDir, $aPatterns[$iPattern], $FLTA_FILES)
+		If @error Or Not IsArray($aBins) Then ContinueLoop
+
+		For $i = 1 To $aBins[0]
+			Local $sSource = $sOriginalDir & "\" & $aBins[$i]
+			Local $sSameNameDest = $sNewDir & "\" & $aBins[$i]
+			_CopyUnicodeSidecarFile($sSource, $sSameNameDest)
+
+			; Some Inno tools derive the sidecar name from the current EXE base name.
+			; Therefore also provide Unicode_<random>-1.bin beside Unicode_<random>.exe.
+			Local $aSuffix = StringRegExp($aBins[$i], "(?i)(-\d+\.bin)$", 1)
+			If IsArray($aSuffix) Then _CopyUnicodeSidecarFile($sSource, $sNewDir & "\" & $sNewBase & $aSuffix[0])
+		Next
+	Next
+EndFunc
+
+; Copy one temporary Unicode sidecar and remember it for cleanup.
+Func _CopyUnicodeSidecarFile($sSource, $sDest)
+	If StringIsSpace($sSource) Or StringIsSpace($sDest) Then Return False
+	If StringLower($sSource) = StringLower($sDest) Then Return True
+	If Not FileExists($sSource) Then Return False
+
+	If FileCopy($sSource, $sDest, $FC_OVERWRITE + $FC_CREATEPATH) Then
+		For $i = 0 To UBound($g_aUnicodeSidecarCopies) - 1
+			If StringLower($g_aUnicodeSidecarCopies[$i]) = StringLower($sDest) Then Return True
+		Next
+		_ArrayAdd($g_aUnicodeSidecarCopies, $sDest)
+		Cout("Copied Unicode sidecar file: " & $sDest)
+		Return True
+	EndIf
+
+	Cout("Failed to copy Unicode sidecar file: " & $sSource & " -> " & $sDest)
+	Return False
 EndFunc
 
 ; Extract known archive formats
@@ -5135,6 +5203,12 @@ Func extract($arctype, $arcdisp = 0, $additionalParameters = "", $returnSuccess 
 	EndIf
 
 	If $success = $RESULT_SUCCESS And $arctype = $TYPE_ALZ And $g_sExtractorWinner = "" Then LogExtractorWinner("unalz")
+
+	; QuickBMS extracts Descent 3 HOG2 data but does not restore each entry's Unix mtime.
+	; Run only after successful QBMS extraction. The helper verifies HOG2 magic and bounds,
+	; therefore all unrelated QuickBMS formats remain untouched.
+	If $success = $RESULT_SUCCESS And $arctype = $TYPE_QBMS Then _RestoreHog2Timestamps($file, $outdir)
+
 	Cout("Extraction evaluated result: " & _ResultToText($success) & " (" & $success & ")")
 	
 	If $returnSuccess Then
@@ -5256,6 +5330,128 @@ Func ReplacePlaceholders($sString, $bQuote = True)
 	Next
 
 	Return $sString
+EndFunc
+
+; Return True when BMS.db contains at least one game-specific script for an extension.
+; Used only to decide whether the strict media fast-path may safely skip CheckGame().
+Func _HasGameBmsForExtension($sExt)
+	$sExt = StringLower(StringStripWS($sExt, 8))
+	If $sExt = "" Then Return False
+
+	Local $hDB = OpenDB("BMS.db")
+	If Not $hDB Then
+		_SQLite_Shutdown()
+		Return False
+	EndIf
+
+	Local $aReturn[0], $iRows = 0, $iColumns = 0
+	Local $sSqlExt = StringReplace($sExt, "'", "''")
+	Local $iRc = _SQLite_GetTable($hDB, "SELECT COUNT(*) FROM Extensions e INNER JOIN Scripts s ON s.SID=e.EID WHERE e.Extension='" & $sSqlExt & "'", $aReturn, $iRows, $iColumns)
+	Local $bFound = False
+
+	If $iRc = $SQLITE_OK And UBound($aReturn) > 1 Then $bFound = Number($aReturn[1]) > 0
+
+	_SQLite_Close($hDB)
+	_SQLite_Shutdown()
+	Return $bFound
+EndFunc
+
+; Read a 32-bit unsigned little-endian integer from a 4-byte Binary value.
+Func _Hog2LE32($bValue)
+	If BinaryLen($bValue) <> 4 Then Return SetError(1, 0, 0)
+	Local $sHex = StringTrimLeft(String($bValue), 2)
+	If StringLen($sHex) <> 8 Then Return SetError(2, 0, 0)
+	Return Dec(StringMid($sHex, 7, 2) & StringMid($sHex, 5, 2) & StringMid($sHex, 3, 2) & StringMid($sHex, 1, 2))
+EndFunc
+
+; Set only LastWriteTime from a Unix timestamp. Uses UTC FILETIME directly so local
+; time-zone/DST conversion cannot alter the archived value.
+Func _SetFileUnixMTime($sPath, $iUnixTime)
+	If Not FileExists($sPath) Or $iUnixTime < 0 Then Return False
+
+	; Unix epoch (1970-01-01) to Windows FILETIME epoch (1601-01-01), in 100 ns units.
+	Local $iFileTime = Int(($iUnixTime + 11644473600) * 10000000)
+	Local $tQuad = DllStructCreate("uint64")
+	DllStructSetData($tQuad, 1, $iFileTime)
+	Local $tFileTime = DllStructCreate("dword Low;dword High", DllStructGetPtr($tQuad))
+
+	; FILE_WRITE_ATTRIBUTES, share read/write/delete, OPEN_EXISTING, normal attributes.
+	Local $aCreate = DllCall("kernel32.dll", "handle", "CreateFileW", _
+			"wstr", $sPath, "dword", 0x100, "dword", 0x7, "ptr", 0, "dword", 3, "dword", 0x80, "ptr", 0)
+	If @error Or Not IsArray($aCreate) Or $aCreate[0] = -1 Or $aCreate[0] = 0 Then Return False
+
+	Local $hFile = $aCreate[0]
+	Local $aSet = DllCall("kernel32.dll", "bool", "SetFileTime", "handle", $hFile, "ptr", 0, "ptr", 0, "ptr", DllStructGetPtr($tFileTime))
+	Local $bOk = (Not @error And IsArray($aSet) And $aSet[0] <> 0)
+	DllCall("kernel32.dll", "bool", "CloseHandle", "handle", $hFile)
+	Return $bOk
+EndFunc
+
+; Restore per-file timestamps stored in a Descent 3 HOG2 archive.
+; HOG2 header: magic(4), file count(4), data offset(4), reserved(56) = 68 bytes.
+; Each table entry: name(36), flags(4), length(4), timestamp(4) = 48 bytes.
+; Fail closed: an invalid header/table causes an immediate return without touching files.
+Func _RestoreHog2Timestamps($sArchive, $sOutputDir)
+	Local $hArchive = FileOpen($sArchive, $FO_BINARY)
+	If $hArchive = -1 Then Return False
+
+	Local $iArchiveSize = FileGetSize($sArchive)
+	If $iArchiveSize < 68 Then
+		FileClose($hArchive)
+		Return False
+	EndIf
+
+	Local $bHeader = FileRead($hArchive, 68)
+	If @error Or BinaryLen($bHeader) <> 68 Or BinaryToString(BinaryMid($bHeader, 1, 4), 1) <> "HOG2" Then
+		FileClose($hArchive)
+		Return False
+	EndIf
+
+	Local $iFiles = _Hog2LE32(BinaryMid($bHeader, 5, 4))
+	If @error Then
+		FileClose($hArchive)
+		Return False
+	EndIf
+	Local $iDataOffset = _Hog2LE32(BinaryMid($bHeader, 9, 4))
+	If @error Or $iFiles < 0 Or $iFiles > 1000000 Then
+		FileClose($hArchive)
+		Return False
+	EndIf
+
+	Local $iTableEnd = 68 + ($iFiles * 48)
+	If $iTableEnd > $iArchiveSize Or $iDataOffset < $iTableEnd Or $iDataOffset > $iArchiveSize Then
+		FileClose($hArchive)
+		Return False
+	EndIf
+
+	FileSetPos($hArchive, 68, $FILE_BEGIN)
+	Local $sRoot = _PathFull($sOutputDir)
+	If StringRight($sRoot, 1) <> "\" Then $sRoot &= "\"
+	Local $sRootLower = StringLower($sRoot)
+	Local $iRestored = 0
+
+	For $i = 0 To $iFiles - 1
+		Local $bEntry = FileRead($hArchive, 48)
+		If @error Or BinaryLen($bEntry) <> 48 Then ExitLoop
+
+		Local $sName = BinaryToString(BinaryMid($bEntry, 1, 36), 1)
+		Local $iNull = StringInStr($sName, Chr(0))
+		If $iNull Then $sName = StringLeft($sName, $iNull - 1)
+		$sName = StringReplace($sName, "/", "\")
+		If $sName = "" Then ContinueLoop
+
+		Local $iTimestamp = _Hog2LE32(BinaryMid($bEntry, 45, 4))
+		If @error Then ContinueLoop
+
+		; Keep timestamp writes strictly inside the extraction directory.
+		Local $sTarget = _PathFull($sRoot & $sName)
+		If StringLeft(StringLower($sTarget), StringLen($sRootLower)) <> $sRootLower Then ContinueLoop
+		If _SetFileUnixMTime($sTarget, $iTimestamp) Then $iRestored += 1
+	Next
+
+	FileClose($hArchive)
+	If $iRestored > 0 Then Cout("HOG2 timestamps restored: " & $iRestored & "/" & $iFiles)
+	Return $iRestored > 0
 EndFunc
 
 ; Load a BMS script from the database and start extraction
@@ -6267,6 +6463,15 @@ Func terminate($status, $fname = '', $arctype = '', $arcdisp = '')
 			If Not FileRecycle($file) Then Cout("Failed to recycle file")
 		EndIf
 		Cout("Moving extracted files: " & _DirMove($outdir, $oldoutdir))
+		If UBound($g_aUnicodeSidecarCopies) > 0 Then
+			For $i = 0 To UBound($g_aUnicodeSidecarCopies) - 1
+				If FileExists($g_aUnicodeSidecarCopies[$i]) Then
+					Cout("Removing Unicode sidecar copy: " & $g_aUnicodeSidecarCopies[$i])
+					FileDelete($g_aUnicodeSidecarCopies[$i])
+				EndIf
+			Next
+			ReDim $g_aUnicodeSidecarCopies[0]
+		EndIf
 		$fname = $sUnicodeName
 		$file = $oldpath
 		$outdir = $oldoutdir
@@ -7400,7 +7605,37 @@ Func _PipelineOutputStatus($sLog)
 			Return "NOFREESPACE"
 	EndSwitch
 
+	$sLog = String($sLog)
+	If StringIsSpace($sLog) Then Return "UNKNOWN"
+
+	; Some extractors, especially innounp, do not print a final "Everything is Ok" line.
+	; Classify their OUTPUT step from stdout/stderr only, without changing extraction logic.
+	If __HasPasswordFailureText($sLog) Then Return "PASSWORD"
+	If StringInStr($sLog, "Break signaled", 1) Or StringInStr($sLog, "Program aborted", 1) Or StringInStr($sLog, "User break", 1) Then Return "CANCELED"
+	If StringInStr($sLog, "There is not enough space on the disk", 1) Or StringInStr($sLog, "Not enough free space available", 1) Then Return "NOFREESPACE"
+
+	If StringInStr($sLog, "Could not find a necessary file", 1) Or _
+		   StringInStr($sLog, "Error (Exception)", 1) Or _
+		   StringInStr($sLog, "Missing volume", 1) Or _
+		   StringInStr($sLog, "Open ERROR: Can not open the file as", 1) Or _
+		   StringInStr($sLog, "Error: System.Exception:", 1) Or _
+		   StringInStr($sLog, "Critical error:", 1) Or _
+		   StringInStr($sLog, "[ERROR] ", 1) Or _
+		   StringInStr($sLog, "MainHeaderNotFoundError", 1) Or _
+		   StringInStr($sLog, "*** ERROR:", 1) Or _
+		   StringInStr($sLog, "ERROR: Wrong tag in package", 1) Or _
+		   StringInStr($sLog, "unzip:  cannot find", 1) Or _
+		   StringInStr($sLog, "err code(", 1) Or _
+		   StringInStr($sLog, "stacktrace", 1) Or _
+		   StringInStr($sLog, "Write error: ", 1) Then Return "FAIL"
+
 	If StringInStr($sLog, "Sub items Errors", 1) Or StringInStr($sLog, "Archives with Errors", 1) Then Return "WARN"
+	If __HasToolSuccessText($sLog) Then Return "OK"
+
+	; innounp success is a list of entries ending with " - extracted".
+	; The fatal checks above must stay before this, so partial Inno failures are not marked OK.
+	If StringInStr($sLog, "Inno Setup archive:", 1) And StringInStr($sLog, " - extracted", 1) Then Return "OK"
+
 	Return "UNKNOWN"
 EndFunc
 
