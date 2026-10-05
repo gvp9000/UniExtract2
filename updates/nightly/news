@@ -1,0 +1,8 @@
+v3.0.9
+
+Fixed InstallShield CAB detection using the native ISc( signature, while preserving legacy data*.cab + .hdr multi-volume handling.
+Renamed arc_conv.exe → arc_convert.exe throughout plugin handling.
+Improved CreateInstall Extractor plugin installation:- supports current cif-setup.zip package layout,
+- extracts nested setup packages without executing them,
+- supports manual selection of ci-extractor.exe, gea.dll, and gentee.dll,
+- validates required runtime files and reports missing components.
