@@ -3,7 +3,7 @@
 #AutoIt3Wrapper_Outfile=.\UniExtract.exe
 #AutoIt3Wrapper_Res_Description=Universal Extractor
 #AutoIt3Wrapper_Res_ProductName=Universal Extractor
-#AutoIt3Wrapper_Res_Fileversion=3.0.6
+#AutoIt3Wrapper_Res_Fileversion=3.0.12
 #AutoIt3Wrapper_Res_ProductVersion=%fileversion%
 #AutoIt3Wrapper_Res_CompanyName=gvp9000
 #AutoIt3Wrapper_Res_Language=1033
@@ -323,7 +323,7 @@ Const $mediainfo = $bindir & "MediaInfo.dll"
 Const $xor = "xor.exe"
 
 ; UniExtract plugins
-Const $arc_conv = "arc_conv.exe"
+Const $arc_conv = "arc_convert.exe"
 Const $bootimg = "bootimg.exe"
 Const $ci = "ci-extractor.exe"
 Const $dcp = "dcp_unpacker.exe"
@@ -472,6 +472,13 @@ Func StartExtraction()
 	$gamefailed = False
 	$ttarchfailed = False
 	$unpackfailed = False
+	; Per-file probe state must never leak across batch items or renamed-copy retries.
+	$isofailed = False
+	$observerfailed = False
+	$g_bArchiveIntegrityError = False
+	$g_bPasswordFailureAbort = False
+	$g_bInnoExtractUsable = False
+	$g_bSymlinkOnlyWarning = False
 	ReDim $aFiletype[0][2]
 	$g_sPrimaryDetectRaw = ""
 	$g_sPrimaryDetectMatch = ""
@@ -519,6 +526,11 @@ Func StartExtraction()
 	; Secondary detector
 	FileScan_Trid($extract)
 
+	; Preserve Bioruebe/original extraction timing for TrID and Unix file matches.
+	; Strict mode still records detector output for reporting, but these legacy routes
+	; must run before broad ISO/game/TotalObserver/7-Zip probes can poison fallback state.
+	_ResolveLegacyNonExeMatchesEarly()
+
 	; Display file information and terminate if scan only mode
 	If Not $extract Then
 		FileScan_MediaInfo()
@@ -545,11 +557,7 @@ Func StartExtraction()
 		Cout("Definitive archive corruption/broken-volume failure detected after general 7-Zip probe; aborting further fallback scans")
 		terminate($STATUS_FAILED, $file, $TYPE_7Z, "7-Zip " & t('TERM_ARCHIVE'))
 	EndIf
-	FileScan_UnixFile()
-	If $g_bArchiveIntegrityError Then
-		Cout("Definitive archive corruption/broken-volume failure detected after unix file tool stage; aborting strict fallback")
-		terminate($STATUS_FAILED, $file, $TYPE_7Z, "7-Zip " & t('TERM_ARCHIVE'))
-	EndIf
+	; TrID and Unix file routes were already applied in original order above.
 	ResolveStrictPipeline()
 
 	; Cannot determine filetype, all checks failed - abort
@@ -610,11 +618,9 @@ Func IsExe()
 		If extract($TYPE_ATLANTIS, "Atlantis FILES custom installer", "", True, True) Then terminate($STATUS_SUCCESS, $filenamefull, $TYPE_ATLANTIS, "Atlantis FILES custom installer")
 	EndIf
 
-	; Do NOT run Bioruebe's generic checkInno() -> checkIE() fallback for every EXE here.
-	; InstExpl.wcx can false-positive on NSIS installers, and extract($TYPE_QBMS) may terminate
-	; as failed before the normal NSIS/7-Zip route gets a chance.
-	; InstallExplorer is still tried only by targeted VISE/Gentee/Setup Factory detector/marker routes above
-	; and by ResolveStrictPipeline() before 7-Zip when such a detector hit is stored.
+	; Preserve Bioruebe's generic EXE compatibility fallback.
+	; Specific detector/TrID routes get first chance; if none finishes extraction,
+	; probe Inno and then InstallExplorer before the final generic 7-Zip fallback.
 
 	; Bioruebe applied Exeinfo and TrID routes before generic 7-Zip.
 	; Apply stored detector/TrID routes here so 7-Zip cannot steal or block a specific installer extractor.
@@ -626,22 +632,15 @@ Func IsExe()
 		FileScan_Peid("hard", $extract)
 	EndIf
 
-	Local $sSkip7zReason = ""
-	If $g_sPrimaryDetectScanner = "Detect It Easy" Then
-		If StringInStr($g_sPrimaryDetectMatch, "Inno Setup") Then
-			$sSkip7zReason = "Inno Setup"
-		ElseIf StringInStr($g_sPrimaryDetectMatch, "InstallShield") Then
-			$sSkip7zReason = "InstallShield"
-		EndIf
-	EndIf
-	If $sSkip7zReason = "" Then
-		If check7z(0, False, True, True) Then terminate($STATUS_SUCCESS, $filenamefull, $TYPE_7Z, "7-Zip " & t('TERM_INSTALLER') & " " & t('TERM_PACKAGE'))
-		If $g_bArchiveIntegrityError Then
-			Cout("Definitive archive corruption/broken-volume failure detected after executable 7-Zip probe; aborting further fallback scans")
-			terminate($STATUS_FAILED, $file, $TYPE_7Z, "7-Zip " & t('TERM_INSTALLER') & " " & t('TERM_PACKAGE'))
-		EndIf
-	Else
-		Cout("Skipping 7zip probe because detectors corroborated " & $sSkip7zReason)
+	; Restore Bioruebe's generic Inno -> InstallExplorer compatibility probe.
+	_CheckBioruebeInnoThenIEFallback()
+
+	; Always retain the final generic 7-Zip fallback. A strong DiE family match is
+	; not sufficient reason to suppress it when the specific extractor did not finish.
+	If check7z(0, False, True, True) Then terminate($STATUS_SUCCESS, $filenamefull, $TYPE_7Z, "7-Zip " & t('TERM_INSTALLER') & " " & t('TERM_PACKAGE'))
+	If $g_bArchiveIntegrityError Then
+		Cout("Definitive archive corruption/broken-volume failure detected after executable 7-Zip probe; aborting further fallback scans")
+		terminate($STATUS_FAILED, $file, $TYPE_7Z, "7-Zip " & t('TERM_INSTALLER') & " " & t('TERM_PACKAGE'))
 	EndIf
 
 	; Keep broad game/resource probes late for EXEs so they do not run before known
@@ -1576,7 +1575,7 @@ If StringIsSpace($sFileType) Or ($sScanner = "Detect It Easy" And Not _IsStrongP
 				Sleep(200)
 				$sFileType = ControlGetText($aReturn[0], "", "TEdit6")
 				$TimerDiff = TimerDiff($TimerStart)
-				If $TimerDiff > ($Timeout * 1000) Then ExitLoop
+				If $TimerDiff > $Timeout Then ExitLoop
 			WEnd
 
 			$sFileType &= @CRLF & @CRLF & ControlGetText($aReturn[0], "", "TEdit5")
@@ -1675,10 +1674,10 @@ If StringIsSpace($sFileType) Or ($sScanner = "Detect It Easy" And Not _IsStrongP
 			extract($TYPE_FEAD)
 
 		Case StringInStr($sMatchType, "Nullsoft")
-			Cout("Primary NSIS/Nullsoft match deferred to generic 7-Zip for reference parity")
+			checkNSIS()
 
 		Case StringInStr($sMatchType, "RAR SFX")
-			Cout("Primary RAR SFX match deferred to generic 7-Zip for reference parity")
+			extract($TYPE_RAR, t('TERM_SFX') & ' RAR ' & t('TERM_ARCHIVE'))
 
 		Case StringInStr($sMatchType, "RoboForm Installer")
 			extract($TYPE_ROBO, 'RoboForm ' & t('TERM_INSTALLER'))
@@ -1762,7 +1761,7 @@ Func FileScan_Peid($sType, $analyze = 1)
 		Sleep(100)
 		$sFileType = ControlGetText("PEiD v", "", "Edit2")
 		$TimerDiff = TimerDiff($TimerStart)
-		If $TimerDiff > ($Timeout * 1000) Then ExitLoop
+		If $TimerDiff > $Timeout Then ExitLoop
 	WEnd
 	WinClose("PEiD v")
 
@@ -2620,7 +2619,7 @@ Func RipExeInfo($tempoutdir, $sCommand)
 		Sleep(200)
 		$return = _GUICtrlListBox_FindString($hControl, "--- End of file ---", True)
 		If $return < 0 Then $return = _GUICtrlListBox_FindString($hControl, "-- End of file --", True)
-		If TimerDiff($TimerStart) > ($Timeout * 1000) Then ExitLoop
+		If TimerDiff($TimerStart) > $Timeout Then ExitLoop
 	WEnd
 
 	Local $success = _GUICtrlListBox_FindString($hControl, "--- Not found , sorry ---", True) == -1
@@ -2879,7 +2878,11 @@ Func _CheckBioruebeInnoThenIEFallback()
 
 	If Not StringInStr($sReturn, "Not a supported Inno Setup installer!", 0) Then
 		$g_bInnoExtractUsable = True
-		Return extract($TYPE_INNO, "Inno Setup " & t('TERM_INSTALLER'), StringInStr($sReturn, "GOG.com game ID is"))
+		If extract($TYPE_INNO, "Inno Setup " & t('TERM_INSTALLER'), StringInStr($sReturn, "GOG.com game ID is"), True, True) Then _
+			terminate($STATUS_SUCCESS, $filenamefull, $TYPE_INNO, "Inno Setup " & t('TERM_INSTALLER'))
+		Cout("Bioruebe compatibility probe identified Inno, but extraction failed; continuing fallbacks")
+		$innofailed = True
+		Return False
 	EndIf
 
 	$innofailed = True
@@ -2918,7 +2921,24 @@ Func TryInstallShieldCabFallback($arcdisp = 0)
 	Return False
 EndFunc
 
-; Detect InstallShield data*.cab sets before the generic Microsoft CAB path
+; Detect the InstallShield CAB magic without changing legacy data*.cab set handling.
+; InstallShield cabinets use the 4-byte signature "ISc(" instead of Microsoft CAB's "MSCF".
+Func _HasInstallShieldCabMagic()
+	If $fileext <> "cab" Then Return False
+
+	Local $hCab = FileOpen($file, 16) ; Binary mode
+	If $hCab = -1 Then Return False
+
+	Local $bHeader = FileRead($hCab, 4)
+	Local $iReadError = @error
+	FileClose($hCab)
+
+	If $iReadError Or BinaryLen($bHeader) <> 4 Then Return False
+	Return BinaryToString($bHeader, 1) = "ISc("
+EndFunc
+
+; Legacy InstallShield data*.cab set heuristic. Keep this separate from the magic check
+; because multi-volume sets must continue to start from the first data*.cab volume.
 Func _IsInstallShieldCabCandidate()
 	If $fileext <> "cab" Then Return False
 	If Not StringRegExp($filenamefull, "(?i)^data\d+\.cab$") Then Return False
@@ -3468,6 +3488,32 @@ Func _ShouldSkipNonFatalProbesForPrimaryMatch()
 	Return False
 EndFunc
 
+; Apply legacy non-EXE detector routes at the same point as original UniExtract.
+; This intentionally leaves the primary DiE/Exeinfo match stored for the later strict fallback.
+Func _ResolveLegacyNonExeMatchesEarly()
+	If Not $extract Then Return
+
+	Local $bOldStrict = $g_bStrictPipeline
+	$g_bStrictPipeline = False
+
+	If $g_sStoredTridType <> "" Then
+		Cout("Applying TrID match(es) in original UniExtract order")
+		Local $aStoredTrid = StringSplit(StringStripCR($g_sStoredTridType), @LF, 2)
+		For $iTrid = 0 To UBound($aStoredTrid) - 1
+			If Not StringIsSpace($aStoredTrid[$iTrid]) Then tridcompare($aStoredTrid[$iTrid])
+		Next
+		; Do not replay the same TrID routes again in ResolveStrictPipeline().
+		$g_sStoredTridType = ""
+	EndIf
+
+	; Original FileScan_Trid() immediately ran the Unix file tool afterwards.
+	; Run it now while strict mode is disabled so filecompare() is applied immediately.
+	FileScan_UnixFile()
+	$g_sStoredUnixType = ""
+
+	$g_bStrictPipeline = $bOldStrict
+EndFunc
+
 Func ResolveStrictPipeline($bApplyPrimaryAndTrid = True, $bApplyUnix = True)
 	If Not $extract Then Return False
 	If $g_bArchiveIntegrityError Then
@@ -3483,7 +3529,11 @@ Func ResolveStrictPipeline($bApplyPrimaryAndTrid = True, $bApplyUnix = True)
 		Local $sSaved = $g_sPrimaryDetectMatch
 		; Reuse existing routing logic now that strict mode is disabled
 		If StringInStr($sSaved, "Inno Setup") Then
-			checkInno()
+			Cout("Strict fallback: trying detector-confirmed Inno Setup non-fatally")
+			$g_bInnoExtractUsable = True
+			If extract($TYPE_INNO, "Inno Setup " & t('TERM_INSTALLER'), False, True, True) Then terminate($STATUS_SUCCESS, $filenamefull, $TYPE_INNO, "Inno Setup " & t('TERM_INSTALLER'))
+			$innofailed = True
+			Cout("Strict fallback: Inno extraction failed; preserving generic fallbacks")
 		ElseIf StringInStr($sSaved, "WinAce / SFX Factory") Then
 			extract($TYPE_ACE, t('TERM_SFX') & " ACE " & t('TERM_ARCHIVE'))
 		ElseIf StringInStr($sSaved, "Actual Installer") Then
@@ -3514,7 +3564,9 @@ Func ResolveStrictPipeline($bApplyPrimaryAndTrid = True, $bApplyUnix = True)
 		ElseIf StringInStr($sSaved, "InstallScript Setup Launcher") Then
 			extract($TYPE_ISCRIPT, "InstallScript " & t('TERM_INSTALLER'))
 		ElseIf StringInStr($sSaved, "InstallShield") Then
-			extract($TYPE_ISEXE, "InstallShield " & t('TERM_INSTALLER'))
+			Cout("Strict fallback: trying detector-confirmed InstallShield non-fatally")
+			If extract($TYPE_ISEXE, "InstallShield " & t('TERM_INSTALLER'), "", True, True) Then terminate($STATUS_SUCCESS, $filenamefull, $TYPE_ISEXE, "InstallShield " & t('TERM_INSTALLER'))
+			Cout("Strict fallback: InstallShield extraction failed; preserving generic fallbacks")
 		ElseIf StringInStr($sSaved, "KGB SFX") Then
 			extract($TYPE_KGB, t('TERM_SFX') & ' KGB ' & t('TERM_PACKAGE'))
 		ElseIf StringInStr($sSaved, "Microsoft Visual C++ 7.0") And StringInStr($sSaved, "Custom") And Not StringInStr($sSaved, "Hotfix") Then
@@ -3526,9 +3578,9 @@ Func ResolveStrictPipeline($bApplyPrimaryAndTrid = True, $bApplyUnix = True)
 		ElseIf StringInStr($sSaved, "Netopsystems AG INSTALLER FEAD") Then
 			extract($TYPE_FEAD, 'Netopsystems FEAD ' & t('TERM_PACKAGE'))
 		ElseIf StringInStr($sSaved, "Nullsoft") Then
-			Cout("Strict fallback: deferring NSIS/Nullsoft to generic 7-Zip for reference parity")
+			checkNSIS()
 		ElseIf StringInStr($sSaved, "RAR SFX") Then
-			Cout("Strict fallback: deferring RAR SFX to generic 7-Zip for reference parity")
+			extract($TYPE_RAR, t('TERM_SFX') & ' RAR ' & t('TERM_ARCHIVE'))
 		ElseIf StringInStr($sSaved, "RoboForm Installer") Then
 			extract($TYPE_ROBO, 'RoboForm ' & t('TERM_INSTALLER'))
 		ElseIf StringInStr($sSaved, "WiX Installer") Or StringInStr($sSaved, "WiX Toolset Installer") Then
@@ -3759,6 +3811,17 @@ Func InitialCheckExt()
 		Case "bcm"
 			_TryExtExtract($TYPE_BCM, 'BCM ' & t('TERM_COMPRESSED'))
 		Case "cab"
+			; Preserve the legacy data*.cab + .hdr path exactly: TYPE_CAB will locate
+			; and start from the first data*.cab volume. Only non-legacy CAB names with
+			; explicit InstallShield magic are redirected directly.
+			If _IsInstallShieldCabCandidate() Then
+				_TryExtExtract($TYPE_CAB, 'Microsoft CAB ' & t('TERM_ARCHIVE'))
+				Return
+			ElseIf _HasInstallShieldCabMagic() Then
+				Cout("InstallShield CAB signature detected before generic Microsoft CAB routing")
+				_TryExtExtract($TYPE_ISCAB, 'InstallShield CAB ' & t('TERM_ARCHIVE'))
+				Return
+			EndIf
 			_TryExtExtract($TYPE_CAB, 'Microsoft CAB ' & t('TERM_ARCHIVE'))
 		Case "chd"
 			_TryExtDiskImage($TYPE_CHD, "MAME " & t('TERM_DISK_IMAGE'))
@@ -4017,7 +4080,7 @@ Func extract($arctype, $arcdisp = 0, $additionalParameters = "", $returnSuccess 
 					Sleep(100)
 					If WinExists("7z SFX Archives splitter warning") Then WinClose("7z SFX Archives splitter warning")
 					$TimerDiff = TimerDiff($TimerStart)
-					If $TimerDiff > ($Timeout * 1000) Then ExitLoop
+					If $TimerDiff > $Timeout Then ExitLoop
 				Until FileExists($filedir & "\" & $filename & ".txt") Or WinExists("7z SFX Archives splitter error")
 
 				ProcessClose("7ZSplit.exe")
@@ -4117,10 +4180,17 @@ Func extract($arctype, $arcdisp = 0, $additionalParameters = "", $returnSuccess 
 			FileDelete($ret)
 
 		Case $TYPE_CAB
-			; Some InstallShield data*.cab files are misdetected as Microsoft CAB.
-			; If a matching data*.cab/data*.hdr set is present, try unshield first.
+			; Preserve the original multi-volume InstallShield data*.cab fallback first.
+			; For other .cab names, explicit "ISc(" magic redirects to TYPE_ISCAB.
 			If _IsInstallShieldCabCandidate() And TryInstallShieldCabFallback($arcdisp) Then
 				$success = $RESULT_SUCCESS
+			ElseIf _HasInstallShieldCabMagic() Then
+				Cout("InstallShield CAB signature detected in Microsoft CAB route; redirecting to InstallShield extractor")
+				If extract($TYPE_ISCAB, 'InstallShield CAB ' & t('TERM_ARCHIVE'), "", True, True) Then
+					$success = $RESULT_SUCCESS
+				Else
+					$success = $RESULT_FAILED
+				EndIf
 			ElseIf StringInStr($sFileType, 'Type 1', 0) Then
 				RunWait(Warn_Execute(Quote($file) & ' /q /x:' & Quote($outdir)), $outdir)
 			Else
@@ -4295,7 +4365,7 @@ Func extract($arctype, $arcdisp = 0, $additionalParameters = "", $returnSuccess 
 			While Not StringInStr($return, "file saved")
 				Sleep(200)
 				$return = ControlGetText($aReturn[0], "", "TEdit5")
-				If TimerDiff($TimerStart) > ($Timeout * 1000) Then ExitLoop
+				If TimerDiff($TimerStart) > $Timeout Then ExitLoop
 			WEnd
 
 			CloseExeInfo($aReturn)
@@ -8117,7 +8187,15 @@ Func _Run($f, $sWorkingDir = $outdir, $show_flag = @SW_MINIMIZE, $bUseCmd = True
 			EndIf
 			Sleep(100)
 		WEnd
-		_PipelineStep("OUTPUT", _PipelineCommandTool($f), _PipelineOutputStatus(""), "runtime logging disabled", $f)
+		; Runtime logging is disabled for some extractors (notably QuickBMS/WCX), so
+		; there may be no stdout/stderr success marker to classify.  Mirror the later
+		; extraction success evaluation here for reporting only: if this command
+		; produced usable output, show the OUTPUT step as OK instead of UNKNOWN.
+		Local $sPipelineOutputStatus = _PipelineOutputStatus("")
+		If $sPipelineOutputStatus = "UNKNOWN" Then
+			If Not (($initdirsize > -1 And _DirGetSize($outdir, $initdirsize + 1) <= $initdirsize) Or (FileGetTime($outdir, 0, 1) == $dirmtime)) Then $sPipelineOutputStatus = "OK"
+		EndIf
+		_PipelineStep("OUTPUT", _PipelineCommandTool($f), $sPipelineOutputStatus, "runtime logging disabled", $f)
 	EndIf
 
 	; Reset run var so no wrong process is closed on tray exit
@@ -8766,7 +8844,7 @@ Func _UpdateGetSize($sPath)
 	If $sPath = $bindir & "x86\" Or $sPath = $bindir & "x64\" Then
 		$iSize -= FileGetSize($sPath & "ffmpeg.exe")
 	ElseIf $sPath = $bindir Then
-		Local $aReturn[] = ["x86\ffmpeg.exe", "x64\ffmpeg.exe", "arc_conv.exe", "Extractor.exe", "iscab.exe", "ISTools.dll", _
+		Local $aReturn[] = ["x86\ffmpeg.exe", "x64\ffmpeg.exe", "arc_convert.exe", "Extractor.exe", "iscab.exe", "ISTools.dll", _
 							"umodel.exe", "SDL2.dll", "dcp_unpacker.exe", "ci-extractor.exe", "gea.dll", "gentee.dll", _
 							"dgcac.exe", "bootimg.exe", "I5comp.exe", "ZD50149.DLL", "ZD51145.DLL"]
 
@@ -11034,11 +11112,11 @@ Func GUI_Plugins($hParent = 0, $sSelection = 0)
 	; h4sh3m Virtual Apps Dependency Extractor disabled in this fork; not included in plugin array.
 	; executable|name|description|filetypes|filemask|extractionfilter|outdir|newfilename|password
 	Local $aPluginInfo[11][9] = [ _
-		[$arc_conv, 'arc_conv', t('PLUGIN_ARC_CONV'), 'nsa, wolf, xp3, ypf', 'arc_convert.zip', 'arc_conv.exe', '', '', 0], _
+		[$arc_conv, 'arc_conv', t('PLUGIN_ARC_CONV'), 'nsa, wolf, xp3, ypf', 'arc_convert.zip', 'arc_convert.exe', '', '', 0], _
 		[$iscab, 'iscab', t('PLUGIN_ISCAB'), 'cab', 'iscab.exe;ISTools.dll', '', '', '', 0], _
 		[$unreal, 'Unreal Engine Resource Viewer', t('PLUGIN_UNREAL'), 'pak, u, uax, upk', 'umodel_win32.zip', 'umodel.exe|SDL2.dll', '', '', 0], _
 		[$dcp, 'WinterMute Engine Unpacker', t('PLUGIN_WINTERMUTE'), 'dcp', $dcp, '', '', '', 0], _
-		[$ci, 'CreateInstall Extractor', t('PLUGIN_CI', CreateArray("ci-extractor.exe", "gea.dll", "gentee.dll")), 'exe (CreateInstall)', 'cif-setup.zip', 'ci-extractor.exe|gea.dll|gentee.dll', '', '', 0], _
+		[$ci, 'CreateInstall Extractor', t('PLUGIN_CI', CreateArray("ci-extractor.exe", "gea.dll", "gentee.dll")), 'exe (CreateInstall)', 'cif-setup.zip;ci-extractor.exe;gea.dll;gentee.dll', 'ci-extractor.exe|gea.dll|gentee.dll', '', '', 0], _
 		[$dgca, 'DGCA', t('PLUGIN_DGCA'), 'dgca', 'dgca_v*.zip', $dgca, '', '', 0], _
 		[$bootimg, 'bootimg', t('PLUGIN_BOOTIMG'), 'boot.img', 'unpack_repack_kernel_redmi1s.zip', 'bootimg.exe', '', '', 0], _
 		[$is5cab, 'is5comp', t('PLUGIN_IS5COMP'), 'cab (InstallShield)', 'i5comp21.rar', 'I5comp.exe|ZD50149.DLL|ZD51145.DLL', '', '', 0], _
@@ -11156,6 +11234,12 @@ Func GUI_Plugins_Install($aPluginInfo, $sPath)
 		terminate($STATUS_SILENT)
 	EndIf
 
+	; CreateInstall Free's current cif-setup.zip is a distribution package, not a flat
+	; UniExtract plugin archive.  Handle it separately and verify all runtime files.
+	If $aPluginInfo[1] = 'CreateInstall Extractor' Then
+		Return GUI_Plugins_InstallCreateInstall($sPath, $aPluginInfo[6])
+	EndIf
+
 	; Determine filetype
 	Local $sExtension = StringRight($sPath, 3)
 	If $sExtension = ".7z" Or $sExtension = "rar" Or $sExtension = "zip" Then ; Unpack archive
@@ -11194,6 +11278,112 @@ Func GUI_Plugins_Install($aPluginInfo, $sPath)
 			Next
 		EndIf
 	EndIf
+EndFunc
+
+; Install CreateInstall Extractor from either the official cif-setup.zip package or
+; directly selected runtime files.  No installer is executed and no system changes are made.
+Func GUI_Plugins_InstallCreateInstall($sPath, $sDestination)
+	Local $aRequired[3] = ["ci-extractor.exe", "gea.dll", "gentee.dll"]
+	Local $aSelected = StringSplit($sPath, "|", $STR_NOCOUNT)
+
+	; FileOpenDialog multi-select returns folder|file1|file2... .  Accept direct
+	; selection of the three installed files as a safe fallback.
+	If UBound($aSelected) > 1 Then
+		Local $sBase = $aSelected[0]
+		Local $iCopied = 0
+		For $sRequired In $aRequired
+			For $i = 1 To UBound($aSelected) - 1
+				If StringLower($aSelected[$i]) <> StringLower($sRequired) Then ContinueLoop
+				If FileCopy($sBase & "\" & $aSelected[$i], $sDestination & $sRequired, 1) Then $iCopied += 1
+				ExitLoop
+			Next
+		Next
+		If $iCopied = UBound($aRequired) And _CreateInstallPluginComplete($sDestination) Then
+			Cout("CreateInstall Extractor plugin installed from selected files")
+			Return True
+		EndIf
+	EndIf
+
+	; Single-file selection: if it is one of the required files, copy it and
+	; report what is still missing instead of silently doing nothing.
+	If UBound($aSelected) = 1 And StringLower(StringRight($sPath, 4)) <> ".zip" And StringLower(StringRight($sPath, 4)) <> ".rar" And StringLower(StringRight($sPath, 3)) <> ".7z" Then
+		Local $sLeaf = StringTrimLeft($sPath, StringInStr($sPath, "\", 0, -1))
+		For $sRequired In $aRequired
+			If StringLower($sLeaf) = StringLower($sRequired) Then
+				FileCopy($sPath, $sDestination & $sRequired, 1)
+				ExitLoop
+			EndIf
+		Next
+		If _CreateInstallPluginComplete($sDestination) Then Return True
+		Return _CreateInstallPluginMissingMessage($sDestination)
+	EndIf
+
+	; Official cif-setup.zip: first unpack the outer ZIP.  Some versions expose
+	; the runtime files directly; others contain cif-setup.exe, which 7-Zip can
+	; be probed without executing it.  Everything happens in temporary folders.
+	Local $sTempRoot = _TempFile(@TempDir, "UniExtract_CI_", "")
+	FileDelete($sTempRoot)
+	DirCreate($sTempRoot)
+	Local $sStage1 = $sTempRoot & "\stage1"
+	Local $sStage2 = $sTempRoot & "\stage2"
+	DirCreate($sStage1)
+	DirCreate($sStage2)
+
+	Cout("CreateInstall plugin: unpacking selected package")
+	_Run($7z & ' x -aou -y -o"' & $sStage1 & '" "' & $sPath & '"', $sStage1, @SW_HIDE, True, True, False)
+	If _CopyCreateInstallPluginFiles($sStage1, $sDestination, $aRequired) Then
+		DirRemove($sTempRoot, 1)
+		Cout("CreateInstall Extractor plugin installed from package")
+		Return True
+	EndIf
+
+	; Probe nested CreateInstall setup executables without running them.
+	Local $aSetups = _FileListToArrayRec($sStage1, "*.exe", $FLTAR_FILES, $FLTAR_RECUR, $FLTAR_NOSORT, $FLTAR_FULLPATH)
+	If IsArray($aSetups) Then
+		For $i = 1 To $aSetups[0]
+			DirRemove($sStage2, 1)
+			DirCreate($sStage2)
+			Cout("CreateInstall plugin: probing nested package " & $aSetups[$i])
+			_Run($7z & ' x -aou -y -o"' & $sStage2 & '" "' & $aSetups[$i] & '"', $sStage2, @SW_HIDE, True, True, False)
+			If _CopyCreateInstallPluginFiles($sStage2, $sDestination, $aRequired) Then
+				DirRemove($sTempRoot, 1)
+				Cout("CreateInstall Extractor plugin installed from nested package")
+				Return True
+			EndIf
+		Next
+	EndIf
+
+	DirRemove($sTempRoot, 1)
+	Return _CreateInstallPluginMissingMessage($sDestination)
+EndFunc
+
+Func _CopyCreateInstallPluginFiles($sSourceDir, $sDestination, ByRef $aRequired)
+	Local $iCopied = 0
+	For $sRequired In $aRequired
+		Local $aFound = _FileListToArrayRec($sSourceDir, $sRequired, $FLTAR_FILES, $FLTAR_RECUR, $FLTAR_NOSORT, $FLTAR_FULLPATH)
+		If Not IsArray($aFound) Or $aFound[0] < 1 Then ContinueLoop
+		If FileCopy($aFound[1], $sDestination & $sRequired, 1) Then $iCopied += 1
+	Next
+	Return $iCopied = UBound($aRequired) And _CreateInstallPluginComplete($sDestination)
+EndFunc
+
+Func _CreateInstallPluginComplete($sDestination)
+	Return FileExists($sDestination & "ci-extractor.exe") And _
+		FileExists($sDestination & "gea.dll") And _
+		FileExists($sDestination & "gentee.dll")
+EndFunc
+
+Func _CreateInstallPluginMissingMessage($sDestination)
+	Local $sMissing = ""
+	If Not FileExists($sDestination & "ci-extractor.exe") Then $sMissing &= "ci-extractor.exe" & @CRLF
+	If Not FileExists($sDestination & "gea.dll") Then $sMissing &= "gea.dll" & @CRLF
+	If Not FileExists($sDestination & "gentee.dll") Then $sMissing &= "gentee.dll" & @CRLF
+	Cout("CreateInstall Extractor plugin installation incomplete. Missing: " & StringReplace(StringStripWS($sMissing, $STR_STRIPTRAILING), @CRLF, ", "))
+	If Not $silentmode Then MsgBox($iTopmost + $MB_ICONWARNING, $title, _
+		"CreateInstall Extractor could not be imported from this package." & @CRLF & @CRLF & _
+		"Please select these three files from an installed CreateInstall/CreateInstall Free folder:" & @CRLF & _
+		"ci-extractor.exe" & @CRLF & "gea.dll" & @CRLF & "gentee.dll")
+	Return False
 EndFunc
 
 ; Update Plugin Manager after list selecton has changed
