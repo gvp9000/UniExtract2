@@ -1,3 +1,31 @@
+v3.0.12
+Several /bin/ files updated
+Improved extraction compatibility with Inno Setup, InstallShield, NSIS and RAR SFX installers.
+Fixed extraction fallback order and improved file detection.
+Added InstallShield CAB signature detection.
+Fixed timeout handling in several extraction tools.
+Improved archive error handling and batch processing.
+Fixed CreateInstall Extractor plugin installation.
+Renamed arc_conv.exe to arc_convert.exe.
+Improved extraction status reporting for QuickBMS and WCX plugins.
+
+v3.0.6
+/bin/ files updated
+Game/QuickBMS detection improved
+	Known BMS extensions are no longer skipped when another detector identifies the file as media.
+	In silent mode, a single matching BMS script is selected automatically.
+	Multiple matches are left unresolved rather than guessed.
+Descent 3 HOG2 support improved
+	Restores the original Unix timestamps of files extracted via QuickBMS from HOG2 archives.
+	Includes validation and path-safety checks.
+Unicode Inno Setup fix
+	When Unicode filenames are temporarily renamed, external Inno files such as setup-1.bin are copied alongside the temporary EXE.
+	Temporary sidecar copies are automatically cleaned up afterward.
+Extraction result detection improved
+	Better classification of OK, FAIL, PASSWORD, CANCELED, NOFREESPACE, and WARN.
+	Specifically fixes successful innounp extractions that don't print a conventional final success message.
+
+
 v3.0.4
 Added password-protected PDF support with qpdf.
 Locked PDFs are decrypted first, then UniExtract continues the normal PDF extraction, such as extracting text, images/pages, attachments, and HTML output.
