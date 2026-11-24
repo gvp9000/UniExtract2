@@ -1,7 +1,0 @@
-v3.0.13
-
-- Added support for InstallShield 3.x Z archives via unshieldv3.exe.
-- Added archive signature validation before extraction.
-- Implemented temporary extraction staging to prevent false success from partial extraction.
-- Preserved existing extraction methods and fallback behavior.
-- Added logging for unshieldv3 extraction results.
