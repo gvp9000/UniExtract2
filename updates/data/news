@@ -1,0 +1,10 @@
+v3.0.12
+
+Improved extraction compatibility with Inno Setup, InstallShield, NSIS and RAR SFX installers.
+Fixed extraction fallback order and improved file detection.
+Added InstallShield CAB signature detection.
+Fixed timeout handling in several extraction tools.
+Improved archive error handling and batch processing.
+Fixed CreateInstall Extractor plugin installation.
+Renamed arc_conv.exe to arc_convert.exe.
+Improved extraction status reporting for QuickBMS and WCX plugins.
